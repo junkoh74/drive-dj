@@ -4,6 +4,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
 <title>Drive DJ</title>
 <style>
   :root { --bg:#0b0d12; --card:#151924; --fg:#e8ecf4; --mut:#8a93a6; --acc:#5b8cff; --ok:#3ad29f; --warn:#ffb454; }
@@ -40,7 +42,7 @@
 </style>
 </head>
 <body>
-  <h1>Drive <span>DJ</span> — 상황 맞춤 주행 플레이리스트</h1>
+  <h1>Drive <span>DJ</span> <small id="ver" style="font-size:11px;color:var(--mut);font-weight:400"></small></h1>
 
   <!-- API 키 입력 (localStorage 저장, 레포에는 저장 안 됨) -->
   <div class="card" id="keyCard">
@@ -91,6 +93,7 @@
 
 <script>
 // ===== 유틸 =====
+const VERSION = 'v5-filter';   // 캐시 확인용 — 화면 제목 옆에 표시됨
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -251,15 +254,20 @@ async function filterToSongs(ids, key){
   try{
     const u=`https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${ids.join(',')}&key=${key}`;
     const r=await fetch(u); const j=await r.json();
-    if(j.error||!j.items) return ids; // API 실패 시에만 원본 사용
+    if(j.error){ log('⚠️ 길이조회 실패(필터 미적용): '+(j.error.message||'').slice(0,50)); return ids; }
+    if(!j.items){ log('⚠️ 길이조회 결과 없음'); return ids; }
     const okDur = it => { const s=durationToSec(it.contentDetails.duration); return s>=90 && s<=600; };
+    const longCount = j.items.filter(it=>durationToSec(it.contentDetails.duration)>600).length;
     // 1순위: 길이 + 제목 모두 통과한 진짜 개별 곡
     const strict = j.items.filter(it=>okDur(it) && !titleIsMix(candMeta[it.id]?.title)).map(it=>it.id);
+    log(`필터: 10분초과 ${longCount}개 제외, 개별곡 ${strict.length}개`);
     if(strict.length>=3) return strict;
     // 2순위: 길이만이라도 통과 (믹스로 되돌아가지 않음)
     const byDur = j.items.filter(okDur).map(it=>it.id);
-    return byDur.length ? byDur : ids;
-  }catch(e){ return ids; }
+    if(byDur.length){ log('곡 부족 → 길이기준만 적용 '+byDur.length+'개'); return byDur; }
+    log('⚠️ 길이 통과 0개 → 원본 사용(믹스 가능)');
+    return ids;
+  }catch(e){ log('⚠️ 필터 예외: '+e.message); return ids; }
 }
 
 // ===== YouTube 검색 → 재생 =====
@@ -392,8 +400,9 @@ renderPref();
 
 // 저장된 키 복원
 const saved=localStorage.getItem('ytKey'); if(saved) $('apiKey').value=saved;
+$('ver').textContent=VERSION;
 loadYT();
-log('대기 중 — API 키 입력 후 시작을 누르세요.');
+log('빌드 '+VERSION+' — 이 표시가 보이면 최신본. API 키 입력 후 시작.');
 </script>
 </body>
 </html>
