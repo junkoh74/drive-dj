@@ -101,7 +101,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v10-scope';
+const VERSION = 'v11-limit';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -176,7 +176,7 @@ async function api(path, opts){
   const r=await fetch('https://api.spotify.com/v1'+path, opts);
   if(r.status===204) return null;
   const txt=await r.text(); let j=null; try{ j=txt?JSON.parse(txt):null; }catch(e){}
-  if(!r.ok){ throw Object.assign(new Error((j&&j.error&&j.error.message)||('HTTP '+r.status)), {status:r.status}); }
+  if(!r.ok){ throw Object.assign(new Error((j&&j.error&&j.error.message)||('HTTP '+r.status)), {status:r.status, path:path.split('?')[0]}); }
   return j;
 }
 
@@ -270,8 +270,8 @@ async function searchAndPlay(query, force){
 
     const freq={}, meta={};
     // 1) 무드 플레이리스트
-    const sj=await api('/search?type=playlist&limit=6&market=KR&q='+encodeURIComponent(query));
-    const pls=(((sj.playlists&&sj.playlists.items)||[]).filter(Boolean)).map(p=>p.id);
+    const sj=await api('/search?type=playlist&limit=20&market=KR&q='+encodeURIComponent(query));
+    const pls=(((sj.playlists&&sj.playlists.items)||[]).filter(Boolean)).map(p=>p.id).slice(0,8);
     if(pls.length){
       await Promise.all(pls.map(async pid=>{
         try{ const pj=await api('/playlists/'+pid+'/tracks?limit=50&market=KR&fields='+encodeURIComponent('items(track(uri,name,artists(name)))'));
@@ -302,7 +302,7 @@ async function searchAndPlay(query, force){
     if(e.status===401) log('인증 만료 — 다시 로그인하세요');
     else if(e.status===403) log('⚠️ 권한/Premium 문제: '+e.message);
     else if(e.status===404) log('⚠️ 활성 기기 없음 — 폰 Spotify에서 곡 재생 후 "↻"');
-    else log('추천 실패: '+e.message);
+    else log('추천 실패 ['+(e.path||'?')+']: '+e.message);
   }
 }
 
