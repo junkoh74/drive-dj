@@ -113,7 +113,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v19-ratio';
+const VERSION = 'v20-diag2';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -304,13 +304,16 @@ async function searchApi(type, q){
 async function minePlaylists(query){
   const freq={}, meta={};
   const sj=(await searchApi('playlist', query))||{};
-  const pls=(((sj.playlists&&sj.playlists.items)||[]).filter(Boolean)).map(p=>p.id).slice(0,8);
+  const items=(sj.playlists&&sj.playlists.items)||[];
+  const pls=items.filter(Boolean).map(p=>p.id).slice(0,8);
+  let trackFail=0;
   await Promise.all(pls.map(async pid=>{
     try{ const pj=await api('/playlists/'+pid+'/tracks?market=KR&fields='+encodeURIComponent('items(track(uri,name,artists(name)))'));
       (pj.items||[]).forEach(it=>{ const tr=it&&it.track; if(!tr||!tr.uri||tr.uri.indexOf('spotify:track:')!==0) return;
         freq[tr.uri]=(freq[tr.uri]||0)+1; meta[tr.uri]={name:tr.name, artist:(tr.artists&&tr.artists[0]&&tr.artists[0].name)||''}; });
-    }catch(e){}
+    }catch(e){ trackFail++; }
   }));
+  log(`PL "${query.slice(0,18)}": 결과 ${items.length}/유효 ${pls.length}/곡 ${Object.keys(freq).length}`+(trackFail?(' /트랙실패 '+trackFail):''));
   return {freq, meta, plCount:pls.length};
 }
 // 풀을 (중복빈도 → 선호아티스트) 순으로 정렬해 uri 배열 반환
