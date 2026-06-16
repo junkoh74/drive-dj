@@ -101,7 +101,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v11-limit';
+const VERSION = 'v12-diag';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -176,7 +176,7 @@ async function api(path, opts){
   const r=await fetch('https://api.spotify.com/v1'+path, opts);
   if(r.status===204) return null;
   const txt=await r.text(); let j=null; try{ j=txt?JSON.parse(txt):null; }catch(e){}
-  if(!r.ok){ throw Object.assign(new Error((j&&j.error&&j.error.message)||('HTTP '+r.status)), {status:r.status, path:path.split('?')[0]}); }
+  if(!r.ok){ throw Object.assign(new Error((j&&j.error&&j.error.message)||('HTTP '+r.status)), {status:r.status, path:path}); }
   return j;
 }
 
