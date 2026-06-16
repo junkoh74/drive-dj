@@ -57,6 +57,9 @@
   <div class="card" id="readyCard" style="display:none">
     <div id="who" style="font-size:14px;margin-bottom:4px"></div>
     <div id="device" style="font-size:12px;color:var(--mut);margin-bottom:10px"></div>
+    <label>YouTube Data API 키 (곡 검색용)</label>
+    <input id="ytKey" type="password" placeholder="AIza..." autocomplete="off" />
+    <div style="height:8px"></div>
     <button id="startBtn">▶ 주행 시작 (위치 추적)</button>
     <button class="ghost" id="logoutBtn" style="margin-top:8px">로그아웃</button>
   </div>
@@ -113,7 +116,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v23-shuffle';
+const VERSION = 'v25-exact';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -276,93 +279,98 @@ async function fetchPlace(lat,lon){
     return {name, type};
   }catch(e){ log('장소 실패: '+e.message); return null; } }
 const placeWord = { coast:'해안도로', mountain:'산길', highway:'고속도로', rural:'시골길', city:'도심' };  // 화면 표시용(한국어)
-const placeEn   = { coast:'coastal drive', mountain:'mountain road', highway:'highway drive', rural:'countryside', city:'city' };  // 검색어용(영어 → 글로벌 곡)
 
 // ===== 무드 → 검색 쿼리 (우선순위: 위치 > 날씨 > 시간 > 속도) =====
+// 트랙 검색용 — 무드 위주(장소는 트랙명 매칭에 안 맞아 제외)
 function buildQueryEn(ctx){
   const sb=speedBucket(ctx.speedKmh);
-  return [ placeEn[ctx.placeType]||'', ctx.weather?ctx.weather.en:'', ctx.tod?ctx.tod.en:'', sb.en, 'drive' ]
-    .filter(Boolean).join(' ');
+  return [ ctx.weather?ctx.weather.en:'', ctx.tod?ctx.tod.en:'', sb.en ].filter(Boolean).join(' ');
 }
 function buildQueryKo(ctx){
   const sb=speedBucket(ctx.speedKmh);
   const wko=(ctx.weather&&ctx.weather.ko!=='–')?ctx.weather.ko:'';
-  return [ placeWord[ctx.placeType]||'드라이브', wko, ctx.tod?ctx.tod.ko:'', sb.koMood, '드라이브 플레이리스트' ]
-    .filter(Boolean).join(' ');
+  return [ wko, ctx.tod?ctx.tod.ko:'', sb.koMood ].filter(Boolean).join(' ');
 }
 // 시그니처도 우선순위 순서로 (변화 감지용)
 function signature(ctx){
   return [ ctx.placeType, ctx.weather?ctx.weather.key:'?', ctx.tod?ctx.tod.key:'?', speedBucket(ctx.speedKmh).key ].join('|');
 }
 
-// ===== 검색 (Spotify가 limit 파라미터를 거부 → limit 없이 호출) =====
-async function searchApi(type, q){
-  try{ return await api(`/search?type=${type}&market=KR&q=`+encodeURIComponent(q)); }
-  catch(e){ log('검색 실패('+type+'): '+e.message); return null; }
-}
 
-// ===== 한 검색어로 플레이리스트를 채굴해 곡 풀 반환 =====
-async function minePlaylists(query){
-  const freq={}, meta={};
-  const sj=(await searchApi('playlist', query))||{};
-  const items=(sj.playlists&&sj.playlists.items)||[];
-  // Spotify 공식 플레이리스트는 곡 접근이 403으로 막힘 → 유저가 만든 것만 채굴
-  const userPls=items.filter(p=>p&&p.id&&p.owner&&p.owner.id!=='spotify');
-  const pls=shuffle(userPls.map(p=>p.id)).slice(0,10);  // 매번 다른 플레이리스트를 채굴해 다양성 확보
-  let trackFail=0, firstErr='';
-  await Promise.all(pls.map(async pid=>{
-    try{ const pj=await api('/playlists/'+pid+'/tracks?market=KR&fields='+encodeURIComponent('items(track(uri,name,artists(name)))'));
-      (pj.items||[]).forEach(it=>{ const tr=it&&it.track; if(!tr||!tr.uri||tr.uri.indexOf('spotify:track:')!==0) return;
-        freq[tr.uri]=(freq[tr.uri]||0)+1; meta[tr.uri]={name:tr.name, artist:(tr.artists&&tr.artists[0]&&tr.artists[0].name)||''}; });
-    }catch(e){ trackFail++; if(!firstErr) firstErr=(e.status||'?')+' '+(e.message||''); }
-  }));
-  log(`PL "${query.slice(0,16)}": 검색 ${items.length}/유저PL ${userPls.length}/곡 ${Object.keys(freq).length}`+(trackFail?(' /실패 '+trackFail+' ['+firstErr+']'):''));
-  return {freq, meta, plCount:pls.length};
+// ===== YouTube: 무드 플레이리스트를 채굴해 곡 '제목'들을 수집 =====
+async function ytGet(url){ const j=await (await fetch(url)).json(); if(j.error) throw new Error((j.error.message||'YT').slice(0,60)); return j; }
+async function ytTitlesFor(query, key){
+  const titles=[];
+  try{
+    const sj=await ytGet(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=playlist&maxResults=6&q=${encodeURIComponent(query)}&key=${key}`);
+    const pls=((sj.items||[]).map(it=>it.id&&it.id.playlistId).filter(Boolean)).slice(0,6);
+    await Promise.all(pls.map(async pid=>{
+      try{ const pj=await ytGet(`https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId=${pid}&key=${key}`);
+        (pj.items||[]).forEach(it=>{ const t=it.snippet&&it.snippet.title; if(t && t!=='Deleted video' && t!=='Private video') titles.push(t); });
+      }catch(e){}
+    }));
+  }catch(e){ log('YouTube 실패: '+e.message); }
+  return titles;
 }
-// 풀을 (중복빈도 → 선호아티스트) 순으로 정렬해 uri 배열 반환
-function rankPool(freq, meta){
-  return Object.keys(freq).filter(u=>!prefs.blocked[u])
-    .sort((a,b)=> (freq[b]-freq[a]) || ((prefs.artist[meta[b].artist]||0)-(prefs.artist[meta[a].artist]||0)));
+// YouTube 영상 제목 → Spotify 검색용으로 정리
+function cleanTitle(t){
+  return String(t)
+    .replace(/\[[^\]]*\]|\([^)]*\)|\{[^}]*\}/g,' ')
+    .replace(/official|video|audio|lyrics?|m\/?v|뮤직비디오|가사|live|color\s*coded|teaser|performance|hd|4k|fmv/gi,' ')
+    .replace(/[|·_]+/g,' ').replace(/\s+/g,' ').trim();
+}
+// 매칭 검증 — Spotify 곡명+아티스트가 YouTube 제목 안에 충분히 들어있어야 같은 곡으로 인정
+function tokz(s){ return String(s).toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').split(' ').filter(w=>w.length>1); }
+function isGoodMatch(ytTitle, tr){
+  const hay=tokz(ytTitle);
+  const need=tokz(tr.name).concat(tokz((tr.artists&&tr.artists[0]&&tr.artists[0].name)||''));
+  if(!need.length || !hay.length) return false;
+  const hit=need.filter(w=>hay.indexOf(w)>=0).length;
+  return hit/need.length >= 0.5;   // 곡명+아티스트 토큰의 절반 이상 일치해야 인정
+}
+// 동시 실행 제한 (Spotify 검색 폭주 방지)
+async function mapLimit(arr, limit, fn){
+  let i=0;
+  async function w(){ while(i<arr.length){ const x=arr[i++]; await fn(x); } }
+  await Promise.all(Array.from({length:Math.min(limit, arr.length||1)}, w));
 }
 
 // =====================================================================
-//  추천: 한국어/영어 플레이리스트를 각각 채굴 → 비율대로 블렌딩 → 재생
+//  추천: YouTube로 무드곡 제목 수집 → Spotify에서 같은 곡 찾아 재생
 // =====================================================================
 async function searchAndPlay(force){
   if(!tokens.access){ log('Spotify 로그인 필요'); return; }
+  const ytKey=$('ytKey').value.trim(); if(!ytKey){ log('YouTube API 키를 입력하세요'); return; }
   const now=Date.now(); if(!force && now-lastFetchTs<45000) return; lastFetchTs=now;
   try{
     const dev=await pickDevice();
     if(!dev){ log('⚠️ 활성 기기 없음 — 폰 Spotify에서 곡 재생 후 "↻"'); return; }
 
-    const N=50, koN=Math.round(N*koRatio/100), foN=N-koN;
-    // 비율이 0이 아닌 쪽만 검색 (불필요한 호출 절감)
-    const ko = koN>0 ? await minePlaylists(buildQueryKo(curContext)) : {freq:{},meta:{},plCount:0};
-    const fo = foN>0 ? await minePlaylists(buildQueryEn(curContext)) : {freq:{},meta:{},plCount:0};
-    candMeta=Object.assign({}, ko.meta, fo.meta);
+    const N=40, koN=Math.round(N*koRatio/100), foN=N-koN;
+    // 1) YouTube에서 무드 플레이리스트 채굴 → 곡 제목 수집 (한/영 비율)
+    const koT = koN>0 ? await ytTitlesFor(buildQueryKo(curContext)+' 노래', ytKey) : [];
+    const foT = foN>0 ? await ytTitlesFor(buildQueryEn(curContext)+' songs', ytKey) : [];
+    log(`YouTube 수집 — 한국 ${koT.length}/해외 ${foT.length} 제목`);
+    const cand = shuffle(koT).slice(0, koN*2).concat(shuffle(foT).slice(0, foN*2));  // 매칭 실패 대비 2배수
+    if(!cand.length){ log('YouTube 곡 없음 (키/쿼터 확인)'); return; }
 
-    const koList=rankPool(ko.freq, ko.meta), foList=rankPool(fo.freq, fo.meta);
-    // 상위 후보군 안에서 셔플 → 대표곡 위주는 유지하되 매번 다른 곡이 나오게
-    const pick=(list,n)=> n<=0?[]:shuffle(list.slice(0, Math.max(n*2,40))).slice(0,n);
-    let uris=pick(koList,koN).concat(pick(foList,foN));
-    if(uris.length<N){ uris=uris.concat(koList, foList); }   // 풀이 얇으면 나머지로 채움
-    uris=shuffle(Array.from(new Set(uris))).slice(0,N);
-
-    // 폴백: 유저 플레이리스트가 없어 곡이 비면 트랙 검색으로 최소한 채움
-    if(!uris.length){
-      const q = koRatio>=50 ? buildQueryKo(curContext) : buildQueryEn(curContext);
-      const tj=(await searchApi('track', q))||{};
-      const list=[];
-      (((tj.tracks&&tj.tracks.items)||[]).filter(Boolean)).forEach(tr=>{
-        if(tr.uri && !prefs.blocked[tr.uri]){ candMeta[tr.uri]={name:tr.name, artist:(tr.artists&&tr.artists[0]&&tr.artists[0].name)||''}; list.push(tr.uri); } });
-      uris=list.slice(0,N);
-      if(uris.length) log('유저 플레이리스트 없음 → 트랙검색 폴백 '+uris.length+'곡');
-    }
-    if(!uris.length){ log('재생할 곡 없음'); return; }
-
-    const koTaken=uris.filter(u=>ko.freq[u]).length;
-    log(`한국 PL ${ko.plCount}/해외 PL ${fo.plCount} → ${uris.length}곡 (한국 ${koTaken}, 해외 ${uris.length-koTaken}, 목표비율 ${koRatio}%)`);
-    applyOrQueue(uris, force);
+    // 2) Spotify에서 같은 곡 검색 → URI 확보
+    const uris=[], meta={}; let tried=0, miss=0;
+    await mapLimit(cand, 6, async (t)=>{
+      const q=cleanTitle(t); if(!q) return; tried++;
+      try{ const tj=await api('/search?type=track&market=KR&q='+encodeURIComponent(q));
+        const items=(tj&&tj.tracks&&tj.tracks.items)||[];
+        // 정확히 일치하는 곡만 채택 — 없으면 유사곡 대신 건너뜀
+        const tr=items.find(x=> x&&x.uri && isGoodMatch(t, x));
+        if(tr && !prefs.blocked[tr.uri] && !meta[tr.uri]){ meta[tr.uri]={name:tr.name, artist:(tr.artists&&tr.artists[0]&&tr.artists[0].name)||''}; uris.push(tr.uri); }
+        else miss++;
+      }catch(e){ miss++; }
+    });
+    candMeta=meta;
+    const final=shuffle(uris).slice(0,N);
+    if(!final.length){ log('Spotify 정확매칭 0곡 (유사곡 추가 안 함)'); return; }
+    log(`Spotify 정확매칭 ${final.length}곡 / 시도 ${tried} (미매칭 ${miss} 제외) → 재생`);
+    applyOrQueue(final, force);
   }catch(e){
     if(e.status===401) log('인증 만료 — 다시 로그인하세요');
     else if(e.status===403) log('⚠️ 권한/Premium 문제: '+e.message);
@@ -472,6 +480,7 @@ function showReady(connected){
 $('loginBtn').addEventListener('click', login);
 $('logoutBtn').addEventListener('click', ()=>{ localStorage.removeItem('sp_tok'); tokens={}; showReady(false); log('로그아웃됨'); });
 $('startBtn').addEventListener('click', async ()=>{
+  localStorage.setItem('ytKey', $('ytKey').value.trim());
   if(!('geolocation' in navigator)){ alert('위치 미지원 브라우저'); return; }
   await pickDevice();
   navigator.geolocation.watchPosition(onPos, onPosErr, { enableHighAccuracy:true, maximumAge:2000, timeout:15000 });
@@ -513,6 +522,7 @@ $('prefPanel').addEventListener('click', e=>{
   $('ver').textContent=VERSION; $('redir').textContent=REDIRECT; renderPref();
   $('koRatioInput').value=koRatio; $('koRatioVal').textContent=koRatio+'% : '+(100-koRatio)+'%';
   const saved=localStorage.getItem('sp_cid'); if(saved) $('clientId').value=saved;
+  const yk=localStorage.getItem('ytKey'); if(yk) $('ytKey').value=yk;
   const params=new URLSearchParams(location.search);
   if(params.get('code')){
     await exchangeCode(params.get('code'));

@@ -76,3 +76,12 @@
 - 무드 검색결과는 대부분 Spotify 공식이라 순수 플레이리스트 채굴이 거의 불가.
 - 조치: 검색 결과에서 owner.id==='spotify' 제외하고 **유저 생성 플레이리스트만 채굴**(이건 200). 유저PL이 0이면 트랙검색 폴백(최후수단).
 - 한계: 유저PL이 적게 잡히면 곡이 빈약. 근본적으론 Extended Quota Mode 승인 시 에디토리얼 접근 가능해질 수 있음(미확인).
+- 확정(v24): 유저 플레이리스트 곡도 전부 403. 우리 개발모드 앱에선 Spotify 플레이리스트 곡 추출이 전면 불가.
+
+## YouTube 검색 + Spotify 재생 하이브리드 (v24, 2026-06-16, 결정적)
+- 사용자 결정: 곡 발굴은 YouTube(플레이리스트 채굴 가능), 재생은 Spotify(백그라운드).
+- 흐름: YouTube 무드 플레이리스트 검색(type=playlist)→playlistItems로 곡 '제목' 수집 → 각 제목 cleanTitle 후 Spotify track 검색으로 같은 곡 URI 매칭 → Spotify 재생.
+- 키 2개 필요: YouTube Data API 키(입력, localStorage 'ytKey') + Spotify OAuth.
+- 한/영 비율: 한국어/영어 YouTube 쿼리로 각각 제목 수집 후 비율대로 혼합, 매칭실패 대비 2배수 수집.
+- 동시 Spotify 검색은 mapLimit(6)로 제한. N=40.
+- 한계: YouTube 제목 파싱(cleanTitle)이 완벽치 않아 일부 곡 매칭 실패/오매칭 가능. 쿼터: YT search 100×2 + playlistItems.
