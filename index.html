@@ -113,7 +113,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v22-userpl';
+const VERSION = 'v23-shuffle';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -135,6 +135,7 @@ function loadPrefs(){ try{ const p=JSON.parse(localStorage.getItem('djPrefsSp'))
 function savePrefs(){ localStorage.setItem('djPrefsSp', JSON.stringify(prefs)); renderPref(); }
 function bumpArtist(a,d){ if(!a) return; prefs.artist[a]=(prefs.artist[a]||0)+d; }
 function esc(s){ return String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); const t=a[i];a[i]=a[j];a[j]=t; } return a; }
 function renderPref(){
   const liked=Object.values(prefs.artist).filter(v=>v>0).length;
   $('prefStat').textContent = `취향 학습 — 선호 아티스트 ${liked} · 차단 곡 ${Object.keys(prefs.blocked).length}`;
@@ -307,7 +308,7 @@ async function minePlaylists(query){
   const items=(sj.playlists&&sj.playlists.items)||[];
   // Spotify 공식 플레이리스트는 곡 접근이 403으로 막힘 → 유저가 만든 것만 채굴
   const userPls=items.filter(p=>p&&p.id&&p.owner&&p.owner.id!=='spotify');
-  const pls=userPls.map(p=>p.id).slice(0,10);
+  const pls=shuffle(userPls.map(p=>p.id)).slice(0,10);  // 매번 다른 플레이리스트를 채굴해 다양성 확보
   let trackFail=0, firstErr='';
   await Promise.all(pls.map(async pid=>{
     try{ const pj=await api('/playlists/'+pid+'/tracks?market=KR&fields='+encodeURIComponent('items(track(uri,name,artists(name)))'));
@@ -341,10 +342,11 @@ async function searchAndPlay(force){
     candMeta=Object.assign({}, ko.meta, fo.meta);
 
     const koList=rankPool(ko.freq, ko.meta), foList=rankPool(fo.freq, fo.meta);
-    // 비율대로 뽑고, 한쪽이 부족하면 다른 쪽으로 채움
-    let uris=koList.slice(0,koN).concat(foList.slice(0,foN));
-    if(uris.length<N){ uris=uris.concat(koList.slice(koN), foList.slice(foN)); }
-    uris=Array.from(new Set(uris)).slice(0,N);
+    // 상위 후보군 안에서 셔플 → 대표곡 위주는 유지하되 매번 다른 곡이 나오게
+    const pick=(list,n)=> n<=0?[]:shuffle(list.slice(0, Math.max(n*2,40))).slice(0,n);
+    let uris=pick(koList,koN).concat(pick(foList,foN));
+    if(uris.length<N){ uris=uris.concat(koList, foList); }   // 풀이 얇으면 나머지로 채움
+    uris=shuffle(Array.from(new Set(uris))).slice(0,N);
 
     // 폴백: 유저 플레이리스트가 없어 곡이 비면 트랙 검색으로 최소한 채움
     if(!uris.length){
