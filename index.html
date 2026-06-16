@@ -101,7 +101,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v9-spotify';
+const VERSION = 'v10-scope';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -129,7 +129,7 @@ function renderPref(){
 //  Spotify OAuth (PKCE) + Web API 원격 제어
 // =====================================================================
 const REDIRECT = location.origin + location.pathname;
-const SCOPES = 'user-read-playback-state user-modify-playback-state user-read-currently-playing';
+const SCOPES = 'user-read-private user-read-playback-state user-modify-playback-state user-read-currently-playing';
 let tokens = (()=>{ try{ return JSON.parse(localStorage.getItem('sp_tok'))||{}; }catch(e){ return {}; } })();
 
 function rand(n){ const a=new Uint8Array(n); crypto.getRandomValues(a); return Array.from(a,b=>('0'+b.toString(16)).slice(-2)).join(''); }
