@@ -63,3 +63,9 @@
 - **관문 1: Extended Quota Mode 신청.** 개발모드는 본인+수동등록 25명 한정. 불특정 다수 로그인하려면 Spotify에 Extended Quota Mode 심사 신청 필요.
 - **관문 2: 네이티브 앱.** iOS/Android + Spotify SDK → 매끄러운 백그라운드 제어, 안정적 GPS, 스토어 배포, 딥링크로 Spotify 앱 자동 실행.
 - 로드맵: (지금) 웹+내 ClientID 입력/본인만 → (v2) PWA+우리 ClientID 내장+"Spotify 로그인" → (v3) 네이티브앱+Spotify SDK.
+
+## ⚠️ Spotify limit 파라미터 거부 (v14, 2026-06-16)
+- 증상: /search 및 /playlists/{id}/tracks 에 limit 파라미터를 넣으면 값(20·50 등 유효범위)과 무관하게 400 "Invalid limit".
+- 자가진단(variant 탐색)으로 확인: limit 제거 시 정상. market=KR는 무관(정상).
+- 원인 불명(Spotify 측 특이동작/개발모드앱 가능성). 규격상 limit 0~50은 유효한데 거부됨.
+- 조치: 모든 Spotify 호출에서 limit 제거, 기본값 사용. (이 때문에 플레이리스트 곡 추출이 전부 실패해 곡이 3개만 나왔었음.)

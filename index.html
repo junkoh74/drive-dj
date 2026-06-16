@@ -101,7 +101,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v13-probe';
+const VERSION = 'v14-nolimit';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -258,20 +258,10 @@ function signature(ctx){
   return [speedBucket(ctx.speedKmh).key, ctx.weather?ctx.weather.key:'?', ctx.tod?ctx.tod.key:'?', ctx.placeType].join('|');
 }
 
-// ===== 자가진단 검색: 파라미터를 하나씩 빼며 성공하는 조합을 찾음 =====
+// ===== 검색 (Spotify가 limit 파라미터를 거부 → limit 없이 호출) =====
 async function searchApi(type, q){
-  const eq=encodeURIComponent(q);
-  const variants=[
-    {label:'limit+market', u:`/search?type=${type}&limit=20&market=KR&q=${eq}`},
-    {label:'limit만',      u:`/search?type=${type}&limit=20&q=${eq}`},
-    {label:'market만',     u:`/search?type=${type}&market=KR&q=${eq}`},
-    {label:'기본',         u:`/search?type=${type}&q=${eq}`},
-  ];
-  for(const v of variants){
-    try{ const j=await api(v.u); log('검색 OK ('+type+'/'+v.label+')'); return j; }
-    catch(e){ log('검색 X ('+type+'/'+v.label+'): '+e.message); }
-  }
-  return null;
+  try{ return await api(`/search?type=${type}&market=KR&q=`+encodeURIComponent(q)); }
+  catch(e){ log('검색 실패('+type+'): '+e.message); return null; }
 }
 
 // =====================================================================
@@ -290,7 +280,7 @@ async function searchAndPlay(query, force){
     const pls=(((sj.playlists&&sj.playlists.items)||[]).filter(Boolean)).map(p=>p.id).slice(0,8);
     if(pls.length){
       await Promise.all(pls.map(async pid=>{
-        try{ const pj=await api('/playlists/'+pid+'/tracks?limit=50&market=KR&fields='+encodeURIComponent('items(track(uri,name,artists(name)))'));
+        try{ const pj=await api('/playlists/'+pid+'/tracks?market=KR&fields='+encodeURIComponent('items(track(uri,name,artists(name)))'));
           (pj.items||[]).forEach(it=>{ const tr=it&&it.track; if(!tr||!tr.uri||tr.uri.indexOf('spotify:track:')!==0) return;
             freq[tr.uri]=(freq[tr.uri]||0)+1; meta[tr.uri]={name:tr.name, artist:(tr.artists&&tr.artists[0]&&tr.artists[0].name)||''}; });
         }catch(e){}
