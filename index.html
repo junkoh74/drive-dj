@@ -110,7 +110,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v17-prefs';
+const VERSION = 'v18-global';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -232,26 +232,24 @@ function haversine(a,b){
 }
 // ===== 시간대 =====
 function timeOfDay(){ const h=new Date().getHours();
-  if(h<6) return {key:'dawn', ko:'새벽'}; if(h<11) return {key:'morning', ko:'아침'};
-  if(h<17) return {key:'day', ko:'낮'}; if(h<20) return {key:'evening', ko:'저녁'};
-  return {key:'night', ko:'밤'}; }
-// ===== 속도 구간 =====
+  if(h<6) return {key:'dawn', ko:'새벽', en:'early morning'}; if(h<11) return {key:'morning', ko:'아침', en:'morning'};
+  if(h<17) return {key:'day', ko:'낮', en:'daytime'}; if(h<20) return {key:'evening', ko:'저녁', en:'sunset'};
+  return {key:'night', ko:'밤', en:'night'}; }
+// ===== 속도: 느림(0~90) / 빠름(91+) 둘로만 =====
 function speedBucket(kmh){
-  if(kmh<5) return {key:'stop', ko:'정차', energy:'잔잔한'};
-  if(kmh<40) return {key:'city', ko:'시내', energy:'기분좋은'};
-  if(kmh<80) return {key:'country', ko:'국도', energy:'감성'};
-  return {key:'highway', ko:'고속도로', energy:'신나는'}; }
+  if(kmh<=90) return {key:'slow', ko:'느림', en:'chill'};
+  return {key:'fast', ko:'빠름', en:'upbeat energetic'}; }
 // ===== WMO 날씨코드 → 무드 =====
 function weatherFromCode(code, isDay){
-  if(code===0) return {key:'clear', ko:isDay?'맑음':'맑은 밤', mood:'청량한'};
-  if(code<=3) return {key:'cloudy', ko:'구름', mood:'잔잔한'};
-  if(code===45||code===48) return {key:'fog', ko:'안개', mood:'몽환적인'};
-  if(code>=51&&code<=67) return {key:'rain', ko:'비', mood:'비 오는'};
-  if(code>=71&&code<=77) return {key:'snow', ko:'눈', mood:'눈 내리는'};
-  if(code>=80&&code<=82) return {key:'rain', ko:'소나기', mood:'비 오는'};
-  if(code>=85&&code<=86) return {key:'snow', ko:'눈', mood:'눈 내리는'};
-  if(code>=95) return {key:'storm', ko:'뇌우', mood:'몰아치는'};
-  return {key:'clear', ko:'–', mood:''}; }
+  if(code===0) return {key:'clear', ko:isDay?'맑음':'맑은 밤', en:'bright'};
+  if(code<=3) return {key:'cloudy', ko:'구름', en:'mellow'};
+  if(code===45||code===48) return {key:'fog', ko:'안개', en:'dreamy'};
+  if(code>=51&&code<=67) return {key:'rain', ko:'비', en:'rainy'};
+  if(code>=71&&code<=77) return {key:'snow', ko:'눈', en:'snowy'};
+  if(code>=80&&code<=82) return {key:'rain', ko:'소나기', en:'rainy'};
+  if(code>=85&&code<=86) return {key:'snow', ko:'눈', en:'snowy'};
+  if(code>=95) return {key:'storm', ko:'뇌우', en:'stormy'};
+  return {key:'clear', ko:'–', en:''}; }
 // ===== 날씨 (Open-Meteo, 키 불필요) =====
 async function fetchWeather(lat,lon){
   try{ const u=`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code,is_day`;
@@ -270,17 +268,18 @@ async function fetchPlace(lat,lon){
     else if(a.village||a.hamlet||a.farm) type='rural';
     return {name, type};
   }catch(e){ log('장소 실패: '+e.message); return null; } }
-const placeWord = { coast:'해안도로', mountain:'산길', highway:'고속도로', rural:'시골길', city:'도심' };
+const placeWord = { coast:'해안도로', mountain:'산길', highway:'고속도로', rural:'시골길', city:'도심' };  // 화면 표시용(한국어)
+const placeEn   = { coast:'coastal drive', mountain:'mountain road', highway:'highway drive', rural:'countryside', city:'city' };  // 검색어용(영어 → 글로벌 곡)
 
-// ===== 무드 → 검색 쿼리 =====
+// ===== 무드 → 검색 쿼리 (우선순위: 위치 > 날씨 > 시간 > 속도, 앞쪽일수록 영향 큼) =====
 function buildQuery(ctx){
   const sb=speedBucket(ctx.speedKmh);
-  const wm=ctx.weather?ctx.weather.mood:''; const tod=ctx.tod?ctx.tod.ko:'';
-  let pw=placeWord[ctx.placeType]||'드라이브'; if(sb.key==='highway') pw='고속도로';
-  return [wm, tod, pw, sb.energy, '드라이브'].filter(Boolean).join(' ');
+  return [ placeEn[ctx.placeType]||'', ctx.weather?ctx.weather.en:'', ctx.tod?ctx.tod.en:'', sb.en, 'drive' ]
+    .filter(Boolean).join(' ');
 }
+// 시그니처도 우선순위 순서로 (변화 감지용)
 function signature(ctx){
-  return [speedBucket(ctx.speedKmh).key, ctx.weather?ctx.weather.key:'?', ctx.tod?ctx.tod.key:'?', ctx.placeType].join('|');
+  return [ ctx.placeType, ctx.weather?ctx.weather.key:'?', ctx.tod?ctx.tod.key:'?', speedBucket(ctx.speedKmh).key ].join('|');
 }
 
 // ===== 검색 (Spotify가 limit 파라미터를 거부 → limit 없이 호출) =====
@@ -311,18 +310,16 @@ async function searchAndPlay(query, force){
         }catch(e){}
       }));
     }
+    const plCount=Object.keys(freq).length;
+    // 2) 개별 곡도 항상 포함 (플레이리스트에만 의존하지 않도록)
+    const tj=(await searchApi('track', query))||{};
+    (((tj.tracks&&tj.tracks.items)||[]).filter(Boolean)).forEach(tr=>{
+      if(tr.uri && !freq[tr.uri]){ freq[tr.uri]=1;
+        meta[tr.uri]={name:tr.name, artist:(tr.artists&&tr.artists[0]&&tr.artists[0].name)||''}; } });
     candMeta=meta;
     let pool=Object.keys(freq).filter(u=>!prefs.blocked[u]);
-    // 2) 폴백: 트랙 직접 검색
-    if(pool.length<5){
-      const tj=(await searchApi('track', query))||{};
-      (((tj.tracks&&tj.tracks.items)||[]).filter(Boolean)).forEach(tr=>{
-        if(tr.uri && !prefs.blocked[tr.uri]){ if(!freq[tr.uri]) freq[tr.uri]=1;
-          meta[tr.uri]={name:tr.name, artist:(tr.artists&&tr.artists[0]&&tr.artists[0].name)||''}; } });
-      candMeta=meta; pool=Object.keys(freq).filter(u=>!prefs.blocked[u]);
-      log('플레이리스트 빈약 → 트랙검색 보강');
-    }
     if(!pool.length){ log('재생할 곡 없음'); return; }
+    log(`플레이리스트곡 ${plCount} + 트랙검색 → 풀 ${pool.length}`);
     const orderBy=(a,b)=> (freq[b]-freq[a]) || ((prefs.artist[meta[b].artist]||0)-(prefs.artist[meta[a].artist]||0));
     pool.sort(orderBy);
     const uris=pool.slice(0,50);
