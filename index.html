@@ -82,7 +82,14 @@
 
   <!-- 재생 컨트롤 -->
   <div class="card">
-    <div id="nowPlaying" style="font-size:14px;margin-bottom:8px;min-height:20px">– 재생 대기 –</div>
+    <div style="display:flex;gap:12px;align-items:center;margin-bottom:12px">
+      <img id="art" alt="" style="width:68px;height:68px;border-radius:8px;background:#222838;object-fit:cover;flex:none" />
+      <div style="flex:1;min-width:0">
+        <div id="npTitle" style="font-size:17px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">– 재생 대기 –</div>
+        <div id="npArtist" style="font-size:14px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
+        <div id="npState" style="font-size:11px;color:var(--mut);margin-top:3px"></div>
+      </div>
+    </div>
     <div class="grid2">
       <button class="ghost" id="badBtn" style="background:#3a2230">👎 싫어요</button>
       <button class="ghost" id="goodBtn" style="background:#1f3a2e">👍 좋아요</button>
@@ -101,7 +108,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v15-skip';
+const VERSION = 'v16-queue';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -111,6 +118,7 @@ let lastFix=null, speedSamples=[], lastSignature=null, lastFetchTs=0, geocodeTs=
 let curContext={ speedKmh:0, weather:null, tod:null, place:null, placeType:'city' };
 let candMeta={};          // uri -> {name, artist}
 let pendingUris=null;     // 현재 곡 끝나면 반영할 다음 추천
+let queueUris=[];         // 지금 재생 중인 추천 목록 (스킵 시 다음 곡 계산용)
 let deviceId=null;
 let nowState={ playing:false, uri:null, dur:0, prog:0 };
 let lastUri=null, lastProg=0, lastArtist=null;  // 암묵 학습용
@@ -197,6 +205,8 @@ async function playUris(uris){
   await api('/me/player/play'+(deviceId?('?device_id='+deviceId):''),
     {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({uris})});
 }
+// 새 추천 목록으로 재생 시작 (스킵 계산을 위해 목록 보관)
+function setQueueAndPlay(uris){ queueUris=uris.slice(); return playUris(uris); }
 
 // ===== 거리 (Haversine, m) =====
 function haversine(a,b){
@@ -316,7 +326,7 @@ async function searchAndPlay(query, force){
 function applyOrQueue(uris, force){
   if(force || !nowState.playing){
     pendingUris=null;
-    playUris(uris).then(()=>log('새 추천 즉시 반영 ('+uris.length+'곡)'))
+    setQueueAndPlay(uris).then(()=>log('새 추천 즉시 반영 ('+uris.length+'곡)'))
       .catch(e=>log('재생 실패: '+(e.message||e)));
   } else {
     pendingUris=uris;
@@ -329,18 +339,24 @@ async function pollPlayback(){
   if(!tokens.access) return;
   try{
     const j=await api('/me/player/currently-playing');
-    if(!j || !j.item){ nowState.playing=false; $('nowPlaying').textContent='– Spotify 재생 대기 –'; return; }
-    const tr=j.item, artist=(tr.artists&&tr.artists[0]&&tr.artists[0].name)||'';
+    if(!j || !j.item){ nowState.playing=false;
+      $('npTitle').textContent='– Spotify 재생 대기 –'; $('npArtist').textContent='';
+      $('npState').textContent='폰 Spotify에서 곡을 한 번 재생하세요'; return; }
+    const tr=j.item, artist=(tr.artists&&tr.artists.map(a=>a.name).join(', '))||'';
     if(tr.uri!==lastUri){           // 곡 전환 → 직전 곡 암묵 평가
       if(lastUri){ if(lastProg>=60000) bumpArtist(lastArtist,0.3); else if(lastProg<20000) bumpArtist(lastArtist,-0.3); savePrefs(); }
-      lastUri=tr.uri; lastArtist=artist;
+      lastUri=tr.uri; lastArtist=(tr.artists&&tr.artists[0]&&tr.artists[0].name)||'';
     }
     lastProg=j.progress_ms||0;
     nowState={ playing:j.is_playing, uri:tr.uri, dur:tr.duration_ms||0, prog:j.progress_ms||0 };
-    $('nowPlaying').textContent='♪ '+tr.name+' — '+artist + (pendingUris?'   (다음 곡부터 새 무드)':'');
+    const img=(tr.album&&tr.album.images&&tr.album.images[0]&&tr.album.images[0].url)||'';
+    if(img && $('art').src!==img) $('art').src=img;
+    $('npTitle').textContent=tr.name||'';
+    $('npArtist').textContent=artist;
+    $('npState').textContent=(j.is_playing?'▶ 재생 중':'⏸ 일시정지')+(pendingUris?' · 다음 곡부터 새 무드 반영':'');
     // 대기 추천을 현재 곡 끝나는 시점에 반영
     if(pendingUris && nowState.dur>0 && nowState.dur-nowState.prog<=2500){
-      const u=pendingUris; pendingUris=null; await playUris(u); log('현재 곡 종료 → 새 추천 반영');
+      const u=pendingUris; pendingUris=null; await setQueueAndPlay(u); log('현재 곡 종료 → 새 추천 반영');
     }
   }catch(e){ if(e.status===401) await refreshToken(); }
 }
@@ -351,8 +367,7 @@ async function rate(good){
   const uri=nowState.uri; if(!uri) return;
   const name=(candMeta[uri]&&candMeta[uri].name)||uri, ar=lastArtist;
   if(good){ bumpArtist(ar,1); log('👍 '+name); }
-  else { prefs.blocked[uri]=1; bumpArtist(ar,-1); log('👎 차단 '+name);
-    try{ await api('/me/player/next'+(deviceId?('?device_id='+deviceId):''),{method:'POST'}); setTimeout(pollPlayback,600); }catch(e){} }
+  else { prefs.blocked[uri]=1; bumpArtist(ar,-1); log('👎 차단 '+name); skipNext(); }
   savePrefs();
 }
 
@@ -415,10 +430,20 @@ $('startBtn').addEventListener('click', async ()=>{
 });
 $('goodBtn').addEventListener('click', ()=>rate(true));
 $('badBtn').addEventListener('click', ()=>rate(false));
+// 우리 목록 기준으로 다음 곡부터 다시 재생 (Spotify 원격 next가 안 먹히는 환경 대비)
 async function skipNext(){
-  try{ await api('/me/player/next'+(deviceId?('?device_id='+deviceId):''),{method:'POST'});
-    log('⏭ 다음 곡'); setTimeout(pollPlayback, 600); }
-  catch(e){ log('스킵 실패: '+e.message); }
+  try{
+    if(queueUris.length){
+      const pos=nowState.uri?queueUris.indexOf(nowState.uri):-1;
+      let next=pos+1; if(next>=queueUris.length) next=0;
+      await playUris(queueUris.slice(next));   // queueUris(전체 목록)는 유지, 다음 곡부터 재생
+      log('⏭ 다음 곡 ('+(next+1)+'/'+queueUris.length+')');
+    } else {
+      await api('/me/player/next'+(deviceId?('?device_id='+deviceId):''),{method:'POST'});
+      log('⏭ 다음 곡');
+    }
+    setTimeout(pollPlayback, 700);
+  }catch(e){ log('스킵 실패: '+e.message); }
 }
 $('skipBtn').addEventListener('click', skipNext);
 $('refreshBtn').addEventListener('click', ()=>updateContext(true));
