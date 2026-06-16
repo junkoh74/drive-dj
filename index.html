@@ -241,16 +241,24 @@ function durationToSec(iso){
   return (+m[1]||0)*3600 + (+m[2]||0)*60 + (+m[3]||0);
 }
 
-// ===== 후보 영상 중 '개별 곡'만 남기기 (90초~9분) =====
+// ===== 제목이 믹스/모음/플레이리스트인지 =====
+function titleIsMix(t){
+  return /모음|연속\s*듣기|플레이리스트|playlist|\bmix\b|메들리|medley|\d+\s*시간|하이라이트|best\s*of|전곡|컴필레이션|모음집|광고\s*없는/i.test(t||'');
+}
+
+// ===== 후보 영상 중 '개별 곡'만 남기기 (90초~10분 + 제목 필터) =====
 async function filterToSongs(ids, key){
   try{
     const u=`https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${ids.join(',')}&key=${key}`;
     const r=await fetch(u); const j=await r.json();
-    if(j.error||!j.items) return ids; // 실패 시 원본 사용
-    const songs=j.items
-      .filter(it=>{ const s=durationToSec(it.contentDetails.duration); return s>=90 && s<=540; })
-      .map(it=>it.id);
-    return songs.length>=5 ? songs : ids; // 너무 적게 남으면 폴백
+    if(j.error||!j.items) return ids; // API 실패 시에만 원본 사용
+    const okDur = it => { const s=durationToSec(it.contentDetails.duration); return s>=90 && s<=600; };
+    // 1순위: 길이 + 제목 모두 통과한 진짜 개별 곡
+    const strict = j.items.filter(it=>okDur(it) && !titleIsMix(candMeta[it.id]?.title)).map(it=>it.id);
+    if(strict.length>=3) return strict;
+    // 2순위: 길이만이라도 통과 (믹스로 되돌아가지 않음)
+    const byDur = j.items.filter(okDur).map(it=>it.id);
+    return byDur.length ? byDur : ids;
   }catch(e){ return ids; }
 }
 
