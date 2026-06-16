@@ -46,3 +46,13 @@
 ## 광고 (2026-06-16)
 - 임베드 IFrame은 그 브라우저가 youtube.com 로그인(프리미엄) 상태여야 광고 제거. 비로그인이라 광고 발생.
 - 완전 무광고는 v2에서 YouTube OAuth 필요.
+
+## YouTube → Spotify 전환 (v9, 2026-06-16, 결정적 변경)
+- **이유:** 주행 중 네비가 포그라운드여야 하는데 임베드 YouTube는 포그라운드에서만 재생됨(백그라운드 불가, Premium 무관). WakeLock으로 화면 켜둬도 네비와 동시 불가.
+- **해법 = 리모컨 아키텍처:** 우리 앱은 두뇌(상황→곡선택), 실제 재생은 백그라운드 되는 음악 앱에 위임. 외부 재생제어 공개 API가 있는 건 Spotify뿐(YouTube는 없음).
+- **구조:** 폰 Spotify 앱이 활성 기기로 백그라운드 재생 → 우리 웹앱이 Web API(PUT /me/player/play)로 곡 푸시. 네비 포그라운드 유지하며 음악 지속.
+- **인증:** OAuth PKCE (백엔드 불필요, 클라이언트만). Client ID는 사용자가 입력(localStorage). Redirect URI = Pages URL을 Spotify 앱에 등록 필수.
+- **추천:** search type=playlist(무드) → playlists/{id}/tracks 추출 → 중복빈도+선호아티스트 정렬 → play uris. 빈약하면 type=track 검색 보강.
+- **제약:** (1) Spotify Premium 필수(재생제어), (2) 폰 Spotify 앱이 켜져 활성 기기여야 함(없으면 404), (3) /recommendations·audio-features는 신규앱 deprecated → search만 사용.
+- **취향:** prefs.blocked(uri), prefs.artist(점수). localStorage 'djPrefsSp'.
+- 상황변화는 폴링(3s)으로 현재 곡 끝나는 시점에 반영(pendingUris).

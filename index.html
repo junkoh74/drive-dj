@@ -1,5 +1,5 @@
 <!doctype html>
-<!-- 주행 중 위치·속도·날씨·시간대에 맞춰 YouTube 플레이리스트를 실시간 생성하는 단일 파일 웹앱 -->
+<!-- 주행 상황(속도·날씨·장소·시간)에 맞춰 Spotify를 원격 제어해 곡을 추천·재생하는 단일 파일 웹앱 -->
 <html lang="ko">
 <head>
 <meta charset="utf-8" />
@@ -8,7 +8,7 @@
 <meta http-equiv="Pragma" content="no-cache" />
 <title>Drive DJ</title>
 <style>
-  :root { --bg:#0b0d12; --card:#151924; --fg:#e8ecf4; --mut:#8a93a6; --acc:#5b8cff; --ok:#3ad29f; --warn:#ffb454; }
+  :root { --bg:#0b0d12; --card:#151924; --fg:#e8ecf4; --mut:#8a93a6; --acc:#1db954; --ok:#3ad29f; --warn:#ffb454; }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   html,body { margin:0; background:var(--bg); color:var(--fg);
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
@@ -24,7 +24,7 @@
   .mood { font-size:15px; line-height:1.5; }
   .mood .q { color:var(--acc); font-weight:600; }
   button { font-size:16px; font-weight:600; border:0; border-radius:12px; padding:14px 16px;
-    background:var(--acc); color:#fff; width:100%; cursor:pointer; }
+    background:var(--acc); color:#06210f; width:100%; cursor:pointer; }
   button.ghost { background:#222838; color:var(--fg); }
   button:active { transform:scale(.99); }
   input { width:100%; font-size:15px; padding:12px; border-radius:10px; border:1px solid #2a3142;
@@ -34,22 +34,31 @@
     background:#222838; color:var(--fg); margin:3px 4px 0 0; }
   #log { font-size:11px; color:var(--mut); white-space:pre-wrap; max-height:120px; overflow:auto;
     font-family:ui-monospace,Menlo,monospace; line-height:1.45; }
-  #player { width:100%; aspect-ratio:16/9; border-radius:12px; overflow:hidden; background:#000; }
   .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
   .dot { width:9px; height:9px; border-radius:50%; display:inline-block; margin-right:6px; background:var(--warn); }
   .dot.on { background:var(--ok); }
   a { color:var(--acc); }
+  .hint { font-size:12px; color:var(--mut); line-height:1.5; margin-top:8px; }
 </style>
 </head>
 <body>
   <h1>Drive <span>DJ</span> <small id="ver" style="font-size:11px;color:var(--mut);font-weight:400"></small></h1>
 
-  <!-- API 키 입력 (localStorage 저장, 레포에는 저장 안 됨) -->
-  <div class="card" id="keyCard">
-    <label>YouTube Data API 키 (이 기기에만 저장됨)</label>
-    <input id="apiKey" type="password" placeholder="AIza..." autocomplete="off" />
+  <!-- 1) Spotify 연결 -->
+  <div class="card" id="authCard">
+    <label>Spotify Client ID (이 기기에만 저장)</label>
+    <input id="clientId" placeholder="developer.spotify.com 앱의 Client ID" autocomplete="off" />
     <div style="height:8px"></div>
-    <button id="startBtn">▶ 시작 (위치·재생 권한 허용)</button>
+    <button id="loginBtn">Spotify 로그인</button>
+    <div class="hint">Premium 필요 · 폰 Spotify 앱이 켜져 있어야 해요. 리다이렉트 URI에 <b id="redir"></b> 를 등록하세요.</div>
+  </div>
+
+  <!-- 2) 연결됨 + 주행 시작 -->
+  <div class="card" id="readyCard" style="display:none">
+    <div id="who" style="font-size:14px;margin-bottom:4px"></div>
+    <div id="device" style="font-size:12px;color:var(--mut);margin-bottom:10px"></div>
+    <button id="startBtn">▶ 주행 시작 (위치 추적)</button>
+    <button class="ghost" id="logoutBtn" style="margin-top:8px">로그아웃</button>
   </div>
 
   <!-- 상태 패널 -->
@@ -71,11 +80,10 @@
     <div id="pills" style="margin-top:8px"></div>
   </div>
 
-  <!-- 플레이어 -->
+  <!-- 재생 컨트롤 -->
   <div class="card">
-    <div id="player"></div>
-    <div id="nowPlaying" style="font-size:13px;color:var(--mut);margin:10px 0 4px;min-height:18px"></div>
-    <div class="grid2" style="margin-top:6px">
+    <div id="nowPlaying" style="font-size:14px;margin-bottom:8px;min-height:20px">– 재생 대기 –</div>
+    <div class="grid2">
       <button class="ghost" id="badBtn" style="background:#3a2230">👎 싫어요</button>
       <button class="ghost" id="goodBtn" style="background:#1f3a2e">👍 좋아요</button>
     </div>
@@ -93,86 +101,122 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v8-wakelock';   // 캐시 확인용 — 화면 제목 옆에 표시됨
+const VERSION = 'v9-spotify';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
 
 // ===== 상태 =====
-let player=null, playerReady=false;
-let lastFix=null;            // {lat,lon,t}
-let speedSamples=[];         // km/h 이동평균용
-let lastSignature=null;      // 재검색 트리거용 시그니처
-let lastFetchTs=0;           // 재검색 디바운스
+let lastFix=null, speedSamples=[], lastSignature=null, lastFetchTs=0, geocodeTs=0;
 let curContext={ speedKmh:0, weather:null, tod:null, place:null, placeType:'city' };
-let geocodeTs=0;             // Nominatim 호출 throttle
+let candMeta={};          // uri -> {name, artist}
+let pendingUris=null;     // 현재 곡 끝나면 반영할 다음 추천
+let deviceId=null;
+let nowState={ playing:false, uri:null, dur:0, prog:0 };
+let lastUri=null, lastProg=0, lastArtist=null;  // 암묵 학습용
 
-// ===== 취향(preference) — localStorage 영구 저장 =====
-// blocked: {videoId:1} 다시 안 틀 곡 / channel: {채널명:점수} 아티스트 선호도
-let prefs = loadPrefs();
-let candMeta = {};   // 검색 후보 id -> {title, channel}
-let curId=null, curCh=null, curStart=0;  // 현재 곡 + 재생 시작시각(암묵 학습용)
-let pendingSongs=null;  // 상황변화로 준비된 다음 추천 (현재 곡 끝나면 반영)
-let wakeLock=null;      // 화면 꺼짐 방지 (주행 중 재생 유지)
-
-function loadPrefs(){
-  try{ return JSON.parse(localStorage.getItem('djPrefs')) || {blocked:{}, channel:{}}; }
-  catch(e){ return {blocked:{}, channel:{}}; }
-}
-function savePrefs(){ localStorage.setItem('djPrefs', JSON.stringify(prefs)); renderPref(); }
-function bumpChannel(ch, d){ if(!ch) return; prefs.channel[ch]=(prefs.channel[ch]||0)+d; }
+// ===== 취향 =====
+let prefs = loadPrefs();   // {blocked:{uri:1}, artist:{name:score}}
+function loadPrefs(){ try{ const p=JSON.parse(localStorage.getItem('djPrefsSp')); return p&&p.blocked?p:{blocked:{},artist:{}}; }catch(e){ return {blocked:{},artist:{}}; } }
+function savePrefs(){ localStorage.setItem('djPrefsSp', JSON.stringify(prefs)); renderPref(); }
+function bumpArtist(a,d){ if(!a) return; prefs.artist[a]=(prefs.artist[a]||0)+d; }
 function renderPref(){
-  const liked=Object.entries(prefs.channel).filter(([,v])=>v>0).length;
-  const blocked=Object.keys(prefs.blocked).length;
-  $('prefStat').textContent = `취향 학습 — 선호 아티스트 ${liked} · 차단 곡 ${blocked}`;
+  const liked=Object.values(prefs.artist).filter(v=>v>0).length;
+  $('prefStat').textContent = `취향 학습 — 선호 아티스트 ${liked} · 차단 곡 ${Object.keys(prefs.blocked).length}`;
 }
 
-// 명시적 평가: 좋아요(+1) / 싫어요(-1, 즉시 차단)
-function rate(good){
-  const d = playerReady && player.getVideoData ? player.getVideoData() : null;
-  const id=d&&d.video_id, ch=d&&d.author;
-  if(!id){ return; }
-  if(good){ bumpChannel(ch, 1); log('👍 '+(d.title||id)); }
-  else { prefs.blocked[id]=1; bumpChannel(ch, -1); log('👎 차단 '+(d.title||id)); }
-  savePrefs();
-  if(!good && playerReady) player.nextVideo();  // 싫어요는 바로 넘김
+// =====================================================================
+//  Spotify OAuth (PKCE) + Web API 원격 제어
+// =====================================================================
+const REDIRECT = location.origin + location.pathname;
+const SCOPES = 'user-read-playback-state user-modify-playback-state user-read-currently-playing';
+let tokens = (()=>{ try{ return JSON.parse(localStorage.getItem('sp_tok'))||{}; }catch(e){ return {}; } })();
+
+function rand(n){ const a=new Uint8Array(n); crypto.getRandomValues(a); return Array.from(a,b=>('0'+b.toString(16)).slice(-2)).join(''); }
+async function sha256b64(s){
+  const d=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+  return btoa(String.fromCharCode.apply(null, new Uint8Array(d))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 }
-// 암묵 평가: 끝까지=약한+, 빨리 스킵=약한-
-function implicitOnLeave(){
-  if(!curCh || !curStart) return;
-  const played=(Date.now()-curStart)/1000;
-  if(played>=60) bumpChannel(curCh, 0.3);
-  else if(played<20) bumpChannel(curCh, -0.3);
-  savePrefs();
+async function login(){
+  const cid=$('clientId').value.trim(); if(!cid){ alert('Client ID를 입력하세요'); return; }
+  localStorage.setItem('sp_cid', cid);
+  const verifier=rand(48); localStorage.setItem('sp_verifier', verifier);
+  const challenge=await sha256b64(verifier);
+  const p=new URLSearchParams({ client_id:cid, response_type:'code', redirect_uri:REDIRECT,
+    scope:SCOPES, code_challenge_method:'S256', code_challenge:challenge });
+  location.href='https://accounts.spotify.com/authorize?'+p.toString();
+}
+async function exchangeCode(code){
+  const cid=localStorage.getItem('sp_cid'), verifier=localStorage.getItem('sp_verifier');
+  const body=new URLSearchParams({ grant_type:'authorization_code', code, redirect_uri:REDIRECT, client_id:cid, code_verifier:verifier });
+  const j=await (await fetch('https://accounts.spotify.com/api/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body})).json();
+  if(j.access_token){ storeTokens(j); } else { log('토큰 교환 실패: '+(j.error_description||j.error||'?')); }
+}
+function storeTokens(j){
+  tokens.access=j.access_token;
+  if(j.refresh_token) tokens.refresh=j.refresh_token;
+  tokens.exp=Date.now()+((j.expires_in||3600)-60)*1000;
+  localStorage.setItem('sp_tok', JSON.stringify(tokens));
+}
+async function refreshToken(){
+  const cid=localStorage.getItem('sp_cid');
+  const body=new URLSearchParams({ grant_type:'refresh_token', refresh_token:tokens.refresh, client_id:cid });
+  const j=await (await fetch('https://accounts.spotify.com/api/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body})).json();
+  if(j.access_token) storeTokens(j); else log('토큰 갱신 실패 — 다시 로그인 필요');
+}
+async function token(){
+  if(!tokens.access) return null;
+  if(Date.now()>tokens.exp && tokens.refresh) await refreshToken();
+  return tokens.access;
+}
+async function api(path, opts){
+  opts=opts||{};
+  const t=await token(); if(!t) throw Object.assign(new Error('no token'),{status:401});
+  opts.headers=Object.assign({'Authorization':'Bearer '+t}, opts.headers||{});
+  const r=await fetch('https://api.spotify.com/v1'+path, opts);
+  if(r.status===204) return null;
+  const txt=await r.text(); let j=null; try{ j=txt?JSON.parse(txt):null; }catch(e){}
+  if(!r.ok){ throw Object.assign(new Error((j&&j.error&&j.error.message)||('HTTP '+r.status)), {status:r.status}); }
+  return j;
 }
 
-// ===== 거리 계산 (Haversine, m) =====
+async function showProfile(){
+  try{ const me=await api('/me'); $('who').textContent='✓ '+(me.display_name||me.id)+' ('+(me.product||'?')+')';
+    if(me.product!=='premium') log('⚠️ Premium이 아니면 재생 제어가 막힐 수 있어요'); }
+  catch(e){ $('who').textContent='✓ 연결됨'; }
+}
+async function pickDevice(){
+  const j=await api('/me/player/devices');
+  const ds=(j&&j.devices)||[];
+  if(!ds.length){ deviceId=null; $('device').textContent='기기 없음 — 폰 Spotify 앱에서 아무 곡이나 재생하세요'; return null; }
+  const dev=ds.find(d=>d.is_active) || ds.find(d=>d.type==='Smartphone') || ds[0];
+  deviceId=dev.id; $('device').textContent='기기: '+dev.name+(dev.is_active?' (활성)':'');
+  return dev;
+}
+async function playUris(uris){
+  await api('/me/player/play'+(deviceId?('?device_id='+deviceId):''),
+    {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({uris})});
+}
+
+// ===== 거리 (Haversine, m) =====
 function haversine(a,b){
   const R=6371000, toR=x=>x*Math.PI/180;
   const dLat=toR(b.lat-a.lat), dLon=toR(b.lon-a.lon);
   const s=Math.sin(dLat/2)**2 + Math.cos(toR(a.lat))*Math.cos(toR(b.lat))*Math.sin(dLon/2)**2;
   return 2*R*Math.asin(Math.sqrt(s));
 }
-
 // ===== 시간대 =====
-function timeOfDay(){
-  const h=new Date().getHours();
-  if(h<6) return {key:'dawn', ko:'새벽'};
-  if(h<11) return {key:'morning', ko:'아침'};
-  if(h<17) return {key:'day', ko:'낮'};
-  if(h<20) return {key:'evening', ko:'저녁'};
-  return {key:'night', ko:'밤'};
-}
-
+function timeOfDay(){ const h=new Date().getHours();
+  if(h<6) return {key:'dawn', ko:'새벽'}; if(h<11) return {key:'morning', ko:'아침'};
+  if(h<17) return {key:'day', ko:'낮'}; if(h<20) return {key:'evening', ko:'저녁'};
+  return {key:'night', ko:'밤'}; }
 // ===== 속도 구간 =====
 function speedBucket(kmh){
   if(kmh<5) return {key:'stop', ko:'정차', energy:'잔잔한'};
   if(kmh<40) return {key:'city', ko:'시내', energy:'기분좋은'};
   if(kmh<80) return {key:'country', ko:'국도', energy:'감성'};
-  return {key:'highway', ko:'고속도로', energy:'신나는'};
-}
-
-// ===== WMO 날씨코드 → 한국어 무드 =====
+  return {key:'highway', ko:'고속도로', energy:'신나는'}; }
+// ===== WMO 날씨코드 → 무드 =====
 function weatherFromCode(code, isDay){
   if(code===0) return {key:'clear', ko:isDay?'맑음':'맑은 밤', mood:'청량한'};
   if(code<=3) return {key:'cloudy', ko:'구름', mood:'잔잔한'};
@@ -182,233 +226,147 @@ function weatherFromCode(code, isDay){
   if(code>=80&&code<=82) return {key:'rain', ko:'소나기', mood:'비 오는'};
   if(code>=85&&code<=86) return {key:'snow', ko:'눈', mood:'눈 내리는'};
   if(code>=95) return {key:'storm', ko:'뇌우', mood:'몰아치는'};
-  return {key:'clear', ko:'–', mood:''};
-}
-
-// ===== 날씨 가져오기 (Open-Meteo, 키 불필요) =====
+  return {key:'clear', ko:'–', mood:''}; }
+// ===== 날씨 (Open-Meteo, 키 불필요) =====
 async function fetchWeather(lat,lon){
-  try{
-    const u=`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code,is_day`;
-    const r=await fetch(u); const j=await r.json();
-    const c=j.current;
-    const w=weatherFromCode(c.weather_code, c.is_day===1);
-    w.temp=Math.round(c.temperature_2m);
-    return w;
-  }catch(e){ log('날씨 실패: '+e.message); return null; }
-}
-
-// ===== 역지오코딩 (Nominatim, 키 불필요, best-effort) =====
+  try{ const u=`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code,is_day`;
+    const j=await (await fetch(u)).json(); const c=j.current;
+    const w=weatherFromCode(c.weather_code, c.is_day===1); w.temp=Math.round(c.temperature_2m); return w;
+  }catch(e){ log('날씨 실패: '+e.message); return null; } }
+// ===== 역지오코딩 (Nominatim) =====
 async function fetchPlace(lat,lon){
-  try{
-    const u=`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=14&accept-language=ko`;
-    const r=await fetch(u); const j=await r.json();
-    const a=j.address||{};
-    const name = a.city||a.town||a.village||a.county||a.suburb||a.road||j.name||'알 수 없음';
-    // 자연지형 힌트로 placeType 보정
-    const cat=(j.category||'')+' '+(j.type||'')+' '+(a.natural||'');
-    let type='city';
-    if(/coast|beach|bay|water|sea|harbour/i.test(cat) || a.natural==='water') type='coast';
+  try{ const u=`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=14&accept-language=ko`;
+    const j=await (await fetch(u)).json(); const a=j.address||{};
+    const name=a.city||a.town||a.village||a.county||a.suburb||a.road||j.name||'알 수 없음';
+    const cat=(j.category||'')+' '+(j.type||'')+' '+(a.natural||''); let type='city';
+    if(/coast|beach|bay|water|sea|harbour/i.test(cat)||a.natural==='water') type='coast';
     else if(/peak|mountain|forest|wood|natural/i.test(cat)) type='mountain';
     else if(/motorway|trunk/i.test(a.road||'')) type='highway';
     else if(a.village||a.hamlet||a.farm) type='rural';
     return {name, type};
-  }catch(e){ log('장소 실패: '+e.message); return null; }
-}
-
-// ===== 장소유형 → 한국어 단어 =====
+  }catch(e){ log('장소 실패: '+e.message); return null; } }
 const placeWord = { coast:'해안도로', mountain:'산길', highway:'고속도로', rural:'시골길', city:'도심' };
 
-// ===== 무드 → YouTube 검색 쿼리 생성 =====
+// ===== 무드 → 검색 쿼리 =====
 function buildQuery(ctx){
   const sb=speedBucket(ctx.speedKmh);
-  const wm=ctx.weather?ctx.weather.mood:'';
-  const tod=ctx.tod?ctx.tod.ko:'';
-  // 고속도로는 속도 구간이 더 신뢰도 높으니 우선
-  let pw = placeWord[ctx.placeType] || '드라이브';
-  if(sb.key==='highway') pw='고속도로';
-  // '플레이리스트/믹스'가 아니라 개별 곡을 노리도록 '노래'로 끝맺음
-  const parts=[wm, tod, pw, sb.energy, '노래'].filter(Boolean);
-  return parts.join(' ');
+  const wm=ctx.weather?ctx.weather.mood:''; const tod=ctx.tod?ctx.tod.ko:'';
+  let pw=placeWord[ctx.placeType]||'드라이브'; if(sb.key==='highway') pw='고속도로';
+  return [wm, tod, pw, sb.energy, '드라이브'].filter(Boolean).join(' ');
 }
-
-// ===== 시그니처: 이게 바뀔 때만 재검색 =====
 function signature(ctx){
-  return [speedBucket(ctx.speedKmh).key,
-          ctx.weather?ctx.weather.key:'?',
-          ctx.tod?ctx.tod.key:'?',
-          ctx.placeType].join('|');
+  return [speedBucket(ctx.speedKmh).key, ctx.weather?ctx.weather.key:'?', ctx.tod?ctx.tod.key:'?', ctx.placeType].join('|');
 }
 
-// ===== ISO8601 재생시간(PT#M#S) → 초 =====
-function durationToSec(iso){
-  const m=/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/.exec(iso||'');
-  if(!m) return 0;
-  return (+m[1]||0)*3600 + (+m[2]||0)*60 + (+m[3]||0);
-}
-
-// ===== 제목이 믹스/모음/플레이리스트인지 =====
-function titleIsMix(t){
-  return /모음|연속\s*듣기|플레이리스트|playlist|\bmix\b|메들리|medley|\d+\s*시간|하이라이트|best\s*of|전곡|컴필레이션|모음집|광고\s*없는/i.test(t||'');
-}
-
-// ===== 후보 영상 중 '개별 곡'만 남기기 (90초~10분 + 제목 필터) =====
-async function filterToSongs(ids, key){
-  try{
-    const u=`https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${ids.join(',')}&key=${key}`;
-    const r=await fetch(u); const j=await r.json();
-    if(j.error){ log('⚠️ 길이조회 실패(필터 미적용): '+(j.error.message||'').slice(0,50)); return ids; }
-    if(!j.items){ log('⚠️ 길이조회 결과 없음'); return ids; }
-    const okDur = it => { const s=durationToSec(it.contentDetails.duration); return s>=90 && s<=600; };
-    const longCount = j.items.filter(it=>durationToSec(it.contentDetails.duration)>600).length;
-    // 1순위: 길이 + 제목 모두 통과한 진짜 개별 곡
-    const strict = j.items.filter(it=>okDur(it) && !titleIsMix(candMeta[it.id]?.title)).map(it=>it.id);
-    log(`필터: 10분초과 ${longCount}개 제외, 개별곡 ${strict.length}개`);
-    if(strict.length>=3) return strict;
-    // 2순위: 길이만이라도 통과 (믹스로 되돌아가지 않음)
-    const byDur = j.items.filter(okDur).map(it=>it.id);
-    if(byDur.length){ log('곡 부족 → 길이기준만 적용 '+byDur.length+'개'); return byDur; }
-    log('⚠️ 길이 통과 0개 → 원본 사용(믹스 가능)');
-    return ids;
-  }catch(e){ log('⚠️ 필터 예외: '+e.message); return ids; }
-}
-
-// ===== 추천 파이프라인: 무드 플레이리스트 검색 → 멤버곡 추출 → 빈도/선호 정렬 → 재생 =====
+// =====================================================================
+//  추천: 무드 플레이리스트 검색 → 트랙 추출 → 빈도/선호 정렬 → 재생
+// =====================================================================
 async function searchAndPlay(query, force){
-  const key=$('apiKey').value.trim();
-  if(!key){ log('API 키 없음 — 검색 생략'); return; }
-  const now=Date.now();
-  if(!force && now-lastFetchTs<45000){ return; } // 디바운스 45s
-  lastFetchTs=now;
+  if(!tokens.access){ log('Spotify 로그인 필요'); return; }
+  const now=Date.now(); if(!force && now-lastFetchTs<45000) return; lastFetchTs=now;
   try{
-    // 1) 무드에 맞는 '플레이리스트' 검색 (사람이 큐레이션한 곡 모음)
-    const su=`https://www.googleapis.com/youtube/v3/search?part=snippet&type=playlist&maxResults=6&q=${encodeURIComponent(query)}&key=${key}`;
-    const sr=await fetch(su); const sj=await sr.json();
-    if(sj.error){ log('YT 오류: '+(sj.error.message||'').slice(0,80)); return; }
-    const plists=(sj.items||[]).map(it=>it.id.playlistId).filter(Boolean);
-    if(!plists.length){ log('플레이리스트 없음 → 직접검색 폴백'); return searchVideosFallback(query, key, force); }
+    const dev=await pickDevice();
+    if(!dev){ log('⚠️ 활성 기기 없음 — 폰 Spotify에서 곡 재생 후 "↻"'); return; }
 
-    // 2) 각 플레이리스트의 멤버 곡 수집 + 중복 빈도 집계
     const freq={}, meta={};
-    await Promise.all(plists.map(async pid=>{
-      try{
-        const pu=`https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId=${pid}&key=${key}`;
-        const pj=await (await fetch(pu)).json();
-        (pj.items||[]).forEach(it=>{
-          const vid=it.snippet&&it.snippet.resourceId&&it.snippet.resourceId.videoId;
-          const title=(it.snippet&&it.snippet.title)||'';
-          if(!vid || title==='Deleted video' || title==='Private video') return;
-          freq[vid]=(freq[vid]||0)+1;
-          meta[vid]={title, channel:(it.snippet.videoOwnerChannelTitle||it.snippet.channelTitle||'')};
-        });
-      }catch(e){}
-    }));
+    // 1) 무드 플레이리스트
+    const sj=await api('/search?type=playlist&limit=6&market=KR&q='+encodeURIComponent(query));
+    const pls=(((sj.playlists&&sj.playlists.items)||[]).filter(Boolean)).map(p=>p.id);
+    if(pls.length){
+      await Promise.all(pls.map(async pid=>{
+        try{ const pj=await api('/playlists/'+pid+'/tracks?limit=50&market=KR&fields='+encodeURIComponent('items(track(uri,name,artists(name)))'));
+          (pj.items||[]).forEach(it=>{ const tr=it&&it.track; if(!tr||!tr.uri||tr.uri.indexOf('spotify:track:')!==0) return;
+            freq[tr.uri]=(freq[tr.uri]||0)+1; meta[tr.uri]={name:tr.name, artist:(tr.artists&&tr.artists[0]&&tr.artists[0].name)||''}; });
+        }catch(e){}
+      }));
+    }
     candMeta=meta;
-    let pool=Object.keys(freq).filter(id=>!prefs.blocked[id]);
-    if(!pool.length){ log('곡 풀 비어있음 → 폴백'); return searchVideosFallback(query, key, force); }
-
-    // 3) '주로 추천되는' 순서 = 여러 모음에 중복 등장한 곡 우선, 그다음 선호 아티스트
-    const orderBy=(a,b)=> (freq[b]-freq[a]) || ((prefs.channel[meta[b].channel]||0)-(prefs.channel[meta[a].channel]||0));
+    let pool=Object.keys(freq).filter(u=>!prefs.blocked[u]);
+    // 2) 폴백: 트랙 직접 검색
+    if(pool.length<5){
+      const tj=await api('/search?type=track&limit=30&market=KR&q='+encodeURIComponent(query));
+      (((tj.tracks&&tj.tracks.items)||[]).filter(Boolean)).forEach(tr=>{
+        if(tr.uri && !prefs.blocked[tr.uri]){ if(!freq[tr.uri]) freq[tr.uri]=1;
+          meta[tr.uri]={name:tr.name, artist:(tr.artists&&tr.artists[0]&&tr.artists[0].name)||''}; } });
+      candMeta=meta; pool=Object.keys(freq).filter(u=>!prefs.blocked[u]);
+      log('플레이리스트 빈약 → 트랙검색 보강');
+    }
+    if(!pool.length){ log('재생할 곡 없음'); return; }
+    const orderBy=(a,b)=> (freq[b]-freq[a]) || ((prefs.artist[meta[b].artist]||0)-(prefs.artist[meta[a].artist]||0));
     pool.sort(orderBy);
-
-    // 4) 상위 후보만 길이검증(긴 멤버·삭제영상 제거)
-    const top=pool.slice(0,40);
-    let songs=(await filterToSongs(top, key)).filter(id=>!prefs.blocked[id]);
-    songs.sort(orderBy);
-    if(!songs.length){ log('검증 후 곡 없음 → 폴백'); return searchVideosFallback(query, key, force); }
-
+    const uris=pool.slice(0,50);
     const maxF=Math.max.apply(null, Object.values(freq));
-    log(`플레이리스트 ${plists.length}개 → 곡풀 ${pool.length} → 재생 ${songs.length} (최다중복 ${maxF}회)`);
-    applyOrQueue(songs, force);
-  }catch(e){ log('추천 실패: '+e.message); }
-}
-
-// 폴백: 플레이리스트가 안 잡힐 때 짧은 개별 곡 직접 검색
-async function searchVideosFallback(query, key, force){
-  try{
-    const u=`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&videoCategoryId=10&videoDuration=short&maxResults=25&q=${encodeURIComponent(query)}&key=${key}`;
-    const j=await (await fetch(u)).json();
-    if(j.error){ log('YT 오류: '+(j.error.message||'').slice(0,80)); return; }
-    candMeta={};
-    (j.items||[]).forEach(it=>{ if(it.id.videoId) candMeta[it.id.videoId]={title:it.snippet.title, channel:it.snippet.channelTitle}; });
-    let ids=Object.keys(candMeta);
-    if(!ids.length){ log('검색 결과 없음'); return; }
-    let songs=(await filterToSongs(ids,key)).filter(id=>!prefs.blocked[id]);
-    songs.sort((a,b)=>(prefs.channel[candMeta[b]?.channel]||0)-(prefs.channel[candMeta[a]?.channel]||0));
-    if(!songs.length){ log('차단 후 남은 곡 없음'); return; }
-    log(`폴백 직접검색 → 곡 ${songs.length}`);
-    applyOrQueue(songs, force);
-  }catch(e){ log('폴백 실패: '+e.message); }
-}
-
-// ===== 재생 반영: 즉시 vs 현재 곡 끝난 뒤 =====
-// force=true(시작/수동 새로고침) 또는 재생 중이 아니면 즉시. 재생 중이면 곡 끝날 때까지 대기.
-function applyOrQueue(songs, force){
-  if(!playerReady) return;
-  const st = player.getPlayerState ? player.getPlayerState() : -1;
-  const playing = (st===1 || st===3); // PLAYING or BUFFERING
-  if(force || !playing){
-    pendingSongs=null;
-    player.loadPlaylist(songs, 0); player.setLoop(true);
-    log('새 추천 즉시 반영 ('+songs.length+'곡)');
-  } else {
-    pendingSongs=songs;
-    log('현재 곡 끝나면 반영 예정 ('+songs.length+'곡 대기)');
-    $('nowPlaying').dataset.pending='1';
+    log(`플레이리스트 ${pls.length}개 → 곡 ${uris.length} (최다중복 ${maxF}회)`);
+    applyOrQueue(uris, force);
+  }catch(e){
+    if(e.status===401) log('인증 만료 — 다시 로그인하세요');
+    else if(e.status===403) log('⚠️ 권한/Premium 문제: '+e.message);
+    else if(e.status===404) log('⚠️ 활성 기기 없음 — 폰 Spotify에서 곡 재생 후 "↻"');
+    else log('추천 실패: '+e.message);
   }
 }
-function applyPending(){
-  if(!pendingSongs || !playerReady) return;
-  const s=pendingSongs; pendingSongs=null;
-  player.loadPlaylist(s, 0); player.setLoop(true);
-  delete $('nowPlaying').dataset.pending;
-  log('현재 곡 종료 → 새 추천 반영');
-}
-// 대기 중인 추천을 현재 곡이 끝나는 시점에 반영 (1초마다 잔여시간 체크)
-setInterval(()=>{
-  if(!pendingSongs || !playerReady || !player.getPlayerState) return;
-  if(player.getPlayerState()===0){ applyPending(); return; } // ENDED
-  const dur=player.getDuration?player.getDuration():0;
-  const cur=player.getCurrentTime?player.getCurrentTime():0;
-  if(dur>0 && dur-cur<=1.2) applyPending();
-}, 1000);
 
-// ===== 화면 꺼짐 방지 (주행 중 재생 유지) =====
-async function requestWake(){
-  try{
-    if('wakeLock' in navigator){
-      wakeLock=await navigator.wakeLock.request('screen');
-      log('화면 켜짐 유지(WakeLock) 활성');
-      wakeLock.addEventListener('release', ()=>{ wakeLock=null; });
-    } else { log('이 브라우저는 WakeLock 미지원 — 화면 자동잠금을 꺼주세요'); }
-  }catch(e){ log('WakeLock 실패: '+e.message); }
+// ===== 즉시 vs 현재 곡 끝난 뒤 =====
+function applyOrQueue(uris, force){
+  if(force || !nowState.playing){
+    pendingUris=null;
+    playUris(uris).then(()=>log('새 추천 즉시 반영 ('+uris.length+'곡)'))
+      .catch(e=>log('재생 실패: '+(e.message||e)));
+  } else {
+    pendingUris=uris;
+    log('현재 곡 끝나면 반영 예정 ('+uris.length+'곡 대기)');
+  }
 }
-// 탭이 다시 보이면 WakeLock 재요청 (백그라운드 갔다 오면 해제되므로)
-document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible' && !wakeLock) requestWake(); });
+
+// ===== 재생 상태 폴링 (3초) — UI·암묵학습·대기반영·곡전환 =====
+async function pollPlayback(){
+  if(!tokens.access) return;
+  try{
+    const j=await api('/me/player/currently-playing');
+    if(!j || !j.item){ nowState.playing=false; $('nowPlaying').textContent='– Spotify 재생 대기 –'; return; }
+    const tr=j.item, artist=(tr.artists&&tr.artists[0]&&tr.artists[0].name)||'';
+    if(tr.uri!==lastUri){           // 곡 전환 → 직전 곡 암묵 평가
+      if(lastUri){ if(lastProg>=60000) bumpArtist(lastArtist,0.3); else if(lastProg<20000) bumpArtist(lastArtist,-0.3); savePrefs(); }
+      lastUri=tr.uri; lastArtist=artist;
+    }
+    lastProg=j.progress_ms||0;
+    nowState={ playing:j.is_playing, uri:tr.uri, dur:tr.duration_ms||0, prog:j.progress_ms||0 };
+    $('nowPlaying').textContent='♪ '+tr.name+' — '+artist + (pendingUris?'   (다음 곡부터 새 무드)':'');
+    // 대기 추천을 현재 곡 끝나는 시점에 반영
+    if(pendingUris && nowState.dur>0 && nowState.dur-nowState.prog<=2500){
+      const u=pendingUris; pendingUris=null; await playUris(u); log('현재 곡 종료 → 새 추천 반영');
+    }
+  }catch(e){ if(e.status===401) await refreshToken(); }
+}
+setInterval(pollPlayback, 3000);
+
+// ===== 평가 =====
+async function rate(good){
+  const uri=nowState.uri; if(!uri) return;
+  const name=(candMeta[uri]&&candMeta[uri].name)||uri, ar=lastArtist;
+  if(good){ bumpArtist(ar,1); log('👍 '+name); }
+  else { prefs.blocked[uri]=1; bumpArtist(ar,-1); log('👎 차단 '+name);
+    try{ await api('/me/player/next',{method:'POST'}); }catch(e){} }
+  savePrefs();
+}
 
 // ===== 컨텍스트 갱신 + 트리거 =====
 async function updateContext(force){
-  curContext.tod=timeOfDay();
-  // 날씨/장소는 위치가 있을 때만
-  render();
+  curContext.tod=timeOfDay(); render();
   const sig=signature(curContext);
   if(force || sig!==lastSignature){
-    lastSignature=sig;
-    const q=buildQuery(curContext);
-    log('상황 변화 → '+sig);
-    await searchAndPlay(q, force);
+    lastSignature=sig; const q=buildQuery(curContext);
+    log('상황 변화 → '+sig); await searchAndPlay(q, force);
   }
 }
-
-// ===== 화면 렌더 =====
 function render(){
   const sb=speedBucket(curContext.speedKmh);
-  $('spd').innerHTML = `${Math.round(curContext.speedKmh)}<small> km/h · ${sb.ko}</small>`;
-  $('wx').textContent = curContext.weather ? `${curContext.weather.ko} ${curContext.weather.temp??''}°` : '–';
-  $('tod').textContent = curContext.tod ? curContext.tod.ko : '–';
-  $('loc').textContent = curContext.place ? `${curContext.place.name} · ${placeWord[curContext.placeType]||curContext.placeType}` : '위치 측정 중';
-  const q = buildQuery(curContext);
-  $('moodTxt').innerHTML = `검색어 → <span class="q">${q}</span>`;
-  $('pills').innerHTML = [sb.ko, curContext.weather?.ko, curContext.tod?.ko, placeWord[curContext.placeType]]
+  $('spd').innerHTML=`${Math.round(curContext.speedKmh)}<small> km/h · ${sb.ko}</small>`;
+  $('wx').textContent=curContext.weather?`${curContext.weather.ko} ${curContext.weather.temp??''}°`:'–';
+  $('tod').textContent=curContext.tod?curContext.tod.ko:'–';
+  $('loc').textContent=curContext.place?`${curContext.place.name} · ${placeWord[curContext.placeType]||curContext.placeType}`:'위치 측정 중';
+  $('moodTxt').innerHTML=`검색어 → <span class="q">${buildQuery(curContext)}</span>`;
+  $('pills').innerHTML=[sb.ko, curContext.weather&&curContext.weather.ko, curContext.tod&&curContext.tod.ko, placeWord[curContext.placeType]]
     .filter(Boolean).map(p=>`<span class="pill">${p}</span>`).join('');
 }
 
@@ -416,18 +374,14 @@ function render(){
 function onPos(p){
   $('gpsDot').classList.add('on'); $('gpsTxt').textContent='GPS 연결됨';
   const lat=p.coords.latitude, lon=p.coords.longitude, t=p.timestamp;
-  // 속도: coords.speed(m/s) 우선, 없으면 Haversine
   let kmh;
-  if(p.coords.speed!=null && !isNaN(p.coords.speed)){ kmh=p.coords.speed*3.6; }
-  else if(lastFix){ const d=haversine(lastFix,{lat,lon}); const dt=(t-lastFix.t)/1000;
-    kmh = dt>0 ? (d/dt)*3.6 : 0; }
+  if(p.coords.speed!=null && !isNaN(p.coords.speed)) kmh=p.coords.speed*3.6;
+  else if(lastFix){ const d=haversine(lastFix,{lat,lon}); const dt=(t-lastFix.t)/1000; kmh=dt>0?(d/dt)*3.6:0; }
   else kmh=0;
   if(kmh<0||kmh>250) kmh=0;
   speedSamples.push(kmh); if(speedSamples.length>5) speedSamples.shift();
-  curContext.speedKmh = speedSamples.reduce((a,b)=>a+b,0)/speedSamples.length;
+  curContext.speedKmh=speedSamples.reduce((a,b)=>a+b,0)/speedSamples.length;
   lastFix={lat,lon,t};
-
-  // 날씨·장소는 throttle (90초마다, 또는 첫 fix)
   const now=Date.now();
   if(now-geocodeTs>90000 || !curContext.weather){
     geocodeTs=now;
@@ -438,59 +392,38 @@ function onPos(p){
 }
 function onPosErr(e){ $('gpsTxt').textContent='GPS 오류: '+e.message; log('GPS 오류: '+e.message); }
 
-// ===== YouTube IFrame API =====
-function loadYT(){
-  const tag=document.createElement('script');
-  tag.src='https://www.youtube.com/iframe_api';
-  document.body.appendChild(tag);
+// ===== UI 토글 =====
+function showReady(connected){
+  $('authCard').style.display = connected?'none':'block';
+  $('readyCard').style.display = connected?'block':'none';
 }
-window.onYouTubeIframeAPIReady=function(){
-  player=new YT.Player('player',{
-    height:'100%', width:'100%',
-    playerVars:{ playsinline:1, autoplay:1, rel:0 },
-    events:{
-      onReady:()=>{ playerReady=true; log('플레이어 준비됨'); },
-      onError:(e)=>log('재생 오류 코드 '+e.data),
-      onStateChange:onState
-    }
-  });
-};
 
-// ===== 시작 =====
-$('startBtn').addEventListener('click', ()=>{
-  const k=$('apiKey').value.trim();
-  if(k) localStorage.setItem('ytKey', k);
-  if(!('geolocation' in navigator)){ alert('이 브라우저는 위치를 지원하지 않아요.'); return; }
-  navigator.geolocation.watchPosition(onPos, onPosErr,
-    { enableHighAccuracy:true, maximumAge:2000, timeout:15000 });
-  log('위치 추적 시작');
-  $('keyCard').style.display='none';
-  requestWake();  // 화면 꺼짐 방지 (사용자 제스처 안에서 호출해야 함)
-  // 시작 제스처로 자동재생 잠금 해제 → 무음 큐 후 첫 검색
-  updateContext(true);
+// ===== 이벤트 =====
+$('loginBtn').addEventListener('click', login);
+$('logoutBtn').addEventListener('click', ()=>{ localStorage.removeItem('sp_tok'); tokens={}; showReady(false); log('로그아웃됨'); });
+$('startBtn').addEventListener('click', async ()=>{
+  if(!('geolocation' in navigator)){ alert('위치 미지원 브라우저'); return; }
+  await pickDevice();
+  navigator.geolocation.watchPosition(onPos, onPosErr, { enableHighAccuracy:true, maximumAge:2000, timeout:15000 });
+  log('위치 추적 시작'); updateContext(true);
 });
-
-// 곡이 바뀔 때 직전 곡의 암묵 평가 → 새 곡 정보 갱신
-function onState(e){
-  if(e.data===YT.PlayerState.PLAYING){
-    const d=player.getVideoData();
-    if(d && d.video_id!==curId){ implicitOnLeave(); curId=d.video_id; curCh=d.author; curStart=Date.now(); }
-    $('nowPlaying').textContent='♪ '+(d.title||'');
-  }
-  // 곡 종료 시엔 다음 곡 PLAYING 전환에서 직전 곡을 평가하므로 여기선 가산하지 않음(이중 가산 방지)
-}
-
 $('goodBtn').addEventListener('click', ()=>rate(true));
 $('badBtn').addEventListener('click', ()=>rate(false));
-$('skipBtn').addEventListener('click', ()=>{ implicitOnLeave(); if(playerReady) player.nextVideo(); });
-$('refreshBtn').addEventListener('click', ()=>{ updateContext(true); });
-renderPref();
+$('skipBtn').addEventListener('click', async ()=>{ try{ await api('/me/player/next',{method:'POST'}); }catch(e){ log('스킵 실패: '+e.message); } });
+$('refreshBtn').addEventListener('click', ()=>updateContext(true));
 
-// 저장된 키 복원
-const saved=localStorage.getItem('ytKey'); if(saved) $('apiKey').value=saved;
-$('ver').textContent=VERSION;
-loadYT();
-log('빌드 '+VERSION+' — 이 표시가 보이면 최신본. API 키 입력 후 시작.');
+// ===== 초기화 =====
+(async function init(){
+  $('ver').textContent=VERSION; $('redir').textContent=REDIRECT; renderPref();
+  const saved=localStorage.getItem('sp_cid'); if(saved) $('clientId').value=saved;
+  const params=new URLSearchParams(location.search);
+  if(params.get('code')){
+    await exchangeCode(params.get('code'));
+    history.replaceState({}, '', REDIRECT);   // URL에서 code 제거
+  }
+  if(tokens.access){ showReady(true); showProfile(); pickDevice(); log('빌드 '+VERSION+' — Spotify 연결됨. 폰 Spotify 앱을 켠 뒤 주행 시작.'); }
+  else { showReady(false); log('빌드 '+VERSION+' — Client ID 입력 후 Spotify 로그인.'); }
+})();
 </script>
 </body>
 </html>
