@@ -93,7 +93,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v5-filter';   // 캐시 확인용 — 화면 제목 옆에 표시됨
+const VERSION = 'v6-short';   // 캐시 확인용 — 화면 제목 옆에 표시됨
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -278,7 +278,8 @@ async function searchAndPlay(query, force){
   if(!force && now-lastFetchTs<45000){ return; } // 디바운스 45s
   lastFetchTs=now;
   try{
-    const u=`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&videoCategoryId=10&maxResults=25&q=${encodeURIComponent(query)}&key=${key}`;
+    // videoDuration=short(4분 미만) → 1시간짜리 믹스/모음이 구조적으로 안 잡히고 개별 곡만 옴
+    const u=`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&videoCategoryId=10&videoDuration=short&maxResults=25&q=${encodeURIComponent(query)}&key=${key}`;
     const r=await fetch(u); const j=await r.json();
     if(j.error){ log('YT 오류: '+(j.error.message||'').slice(0,80)); return; }
     candMeta={};
