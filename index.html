@@ -178,7 +178,8 @@ function buildQuery(ctx){
   // 고속도로는 속도 구간이 더 신뢰도 높으니 우선
   let pw = placeWord[ctx.placeType] || '드라이브';
   if(sb.key==='highway') pw='고속도로';
-  const parts=[wm, tod, pw, sb.energy, '드라이브 플레이리스트'].filter(Boolean);
+  // '플레이리스트/믹스'가 아니라 개별 곡을 노리도록 '노래'로 끝맺음
+  const parts=[wm, tod, pw, sb.energy, '노래'].filter(Boolean);
   return parts.join(' ');
 }
 
@@ -190,6 +191,26 @@ function signature(ctx){
           ctx.placeType].join('|');
 }
 
+// ===== ISO8601 재생시간(PT#M#S) → 초 =====
+function durationToSec(iso){
+  const m=/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/.exec(iso||'');
+  if(!m) return 0;
+  return (+m[1]||0)*3600 + (+m[2]||0)*60 + (+m[3]||0);
+}
+
+// ===== 후보 영상 중 '개별 곡'만 남기기 (90초~9분) =====
+async function filterToSongs(ids, key){
+  try{
+    const u=`https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${ids.join(',')}&key=${key}`;
+    const r=await fetch(u); const j=await r.json();
+    if(j.error||!j.items) return ids; // 실패 시 원본 사용
+    const songs=j.items
+      .filter(it=>{ const s=durationToSec(it.contentDetails.duration); return s>=90 && s<=540; })
+      .map(it=>it.id);
+    return songs.length>=5 ? songs : ids; // 너무 적게 남으면 폴백
+  }catch(e){ return ids; }
+}
+
 // ===== YouTube 검색 → 재생 =====
 async function searchAndPlay(query, force){
   const key=$('apiKey').value.trim();
@@ -198,14 +219,15 @@ async function searchAndPlay(query, force){
   if(!force && now-lastFetchTs<45000){ return; } // 디바운스 45s
   lastFetchTs=now;
   try{
-    const u=`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&videoCategoryId=10&maxResults=18&q=${encodeURIComponent(query)}&key=${key}`;
+    const u=`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&videoCategoryId=10&maxResults=25&q=${encodeURIComponent(query)}&key=${key}`;
     const r=await fetch(u); const j=await r.json();
     if(j.error){ log('YT 오류: '+(j.error.message||'').slice(0,80)); return; }
-    const ids=(j.items||[]).map(it=>it.id.videoId).filter(Boolean);
+    let ids=(j.items||[]).map(it=>it.id.videoId).filter(Boolean);
     if(!ids.length){ log('검색 결과 없음'); return; }
-    log(`검색 "${query}" → ${ids.length}곡`);
+    const songs=await filterToSongs(ids, key);   // 긴 믹스 제외, 개별 곡만
+    log(`검색 "${query}" → 후보 ${ids.length} → 곡 ${songs.length}`);
     if(playerReady){
-      player.loadPlaylist(ids, 0);   // 비디오 ID 배열은 인자형으로 전달해야 재생됨
+      player.loadPlaylist(songs, 0);   // 비디오 ID 배열은 인자형으로 전달해야 재생됨
       player.setLoop(true);
     }
   }catch(e){ log('검색 실패: '+e.message); }
