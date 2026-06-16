@@ -1,0 +1,306 @@
+<!doctype html>
+<!-- 주행 중 위치·속도·날씨·시간대에 맞춰 YouTube 플레이리스트를 실시간 생성하는 단일 파일 웹앱 -->
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Drive DJ</title>
+<style>
+  :root { --bg:#0b0d12; --card:#151924; --fg:#e8ecf4; --mut:#8a93a6; --acc:#5b8cff; --ok:#3ad29f; --warn:#ffb454; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { margin:0; background:var(--bg); color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  body { padding:14px; padding-bottom:40px; }
+  h1 { font-size:18px; margin:0 0 10px; letter-spacing:.3px; }
+  h1 span { color:var(--acc); }
+  .card { background:var(--card); border-radius:14px; padding:14px; margin-bottom:12px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; }
+  .stat { flex:1; min-width:80px; }
+  .stat .k { font-size:11px; color:var(--mut); text-transform:uppercase; letter-spacing:.5px; }
+  .stat .v { font-size:20px; font-weight:600; margin-top:2px; }
+  .stat .v small { font-size:12px; color:var(--mut); font-weight:400; }
+  .mood { font-size:15px; line-height:1.5; }
+  .mood .q { color:var(--acc); font-weight:600; }
+  button { font-size:16px; font-weight:600; border:0; border-radius:12px; padding:14px 16px;
+    background:var(--acc); color:#fff; width:100%; cursor:pointer; }
+  button.ghost { background:#222838; color:var(--fg); }
+  button:active { transform:scale(.99); }
+  input { width:100%; font-size:15px; padding:12px; border-radius:10px; border:1px solid #2a3142;
+    background:#10141d; color:var(--fg); margin-top:6px; }
+  label { font-size:12px; color:var(--mut); }
+  .pill { display:inline-block; font-size:12px; padding:4px 9px; border-radius:999px;
+    background:#222838; color:var(--fg); margin:3px 4px 0 0; }
+  #log { font-size:11px; color:var(--mut); white-space:pre-wrap; max-height:120px; overflow:auto;
+    font-family:ui-monospace,Menlo,monospace; line-height:1.45; }
+  #player { width:100%; aspect-ratio:16/9; border-radius:12px; overflow:hidden; background:#000; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .dot { width:9px; height:9px; border-radius:50%; display:inline-block; margin-right:6px; background:var(--warn); }
+  .dot.on { background:var(--ok); }
+  a { color:var(--acc); }
+</style>
+</head>
+<body>
+  <h1>Drive <span>DJ</span> — 상황 맞춤 주행 플레이리스트</h1>
+
+  <!-- API 키 입력 (localStorage 저장, 레포에는 저장 안 됨) -->
+  <div class="card" id="keyCard">
+    <label>YouTube Data API 키 (이 기기에만 저장됨)</label>
+    <input id="apiKey" type="password" placeholder="AIza..." autocomplete="off" />
+    <div style="height:8px"></div>
+    <button id="startBtn">▶ 시작 (위치·재생 권한 허용)</button>
+  </div>
+
+  <!-- 상태 패널 -->
+  <div class="card">
+    <div class="row">
+      <div class="stat"><div class="k">속도</div><div class="v" id="spd">–<small> km/h</small></div></div>
+      <div class="stat"><div class="k">날씨</div><div class="v" id="wx">–</div></div>
+      <div class="stat"><div class="k">시간대</div><div class="v" id="tod">–</div></div>
+    </div>
+    <div style="height:10px"></div>
+    <div class="stat"><div class="k">위치</div><div class="v" id="loc" style="font-size:15px">위치 권한 대기 중</div></div>
+    <div style="margin-top:8px"><span class="dot" id="gpsDot"></span><span id="gpsTxt" style="font-size:12px;color:var(--mut)">GPS 미연결</span></div>
+  </div>
+
+  <!-- 무드/쿼리 -->
+  <div class="card">
+    <div class="k" style="font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px">지금의 무드</div>
+    <div class="mood" id="moodTxt" style="margin-top:6px">상황을 분석하면 여기에 표시돼요.</div>
+    <div id="pills" style="margin-top:8px"></div>
+  </div>
+
+  <!-- 플레이어 -->
+  <div class="card">
+    <div id="player"></div>
+    <div class="grid2" style="margin-top:10px">
+      <button class="ghost" id="skipBtn">⏭ 다음 곡</button>
+      <button class="ghost" id="refreshBtn">↻ 지금 상황 반영</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="k" style="font-size:11px;color:var(--mut)">로그</div>
+    <div id="log"></div>
+  </div>
+
+<script>
+// ===== 유틸 =====
+const $ = id => document.getElementById(id);
+const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
+  el.textContent = `[${t}] ${m}\n` + el.textContent; };
+
+// ===== 상태 =====
+let player=null, playerReady=false;
+let lastFix=null;            // {lat,lon,t}
+let speedSamples=[];         // km/h 이동평균용
+let lastSignature=null;      // 재검색 트리거용 시그니처
+let lastFetchTs=0;           // 재검색 디바운스
+let curContext={ speedKmh:0, weather:null, tod:null, place:null, placeType:'city' };
+let geocodeTs=0;             // Nominatim 호출 throttle
+
+// ===== 거리 계산 (Haversine, m) =====
+function haversine(a,b){
+  const R=6371000, toR=x=>x*Math.PI/180;
+  const dLat=toR(b.lat-a.lat), dLon=toR(b.lon-a.lon);
+  const s=Math.sin(dLat/2)**2 + Math.cos(toR(a.lat))*Math.cos(toR(b.lat))*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(s));
+}
+
+// ===== 시간대 =====
+function timeOfDay(){
+  const h=new Date().getHours();
+  if(h<6) return {key:'dawn', ko:'새벽'};
+  if(h<11) return {key:'morning', ko:'아침'};
+  if(h<17) return {key:'day', ko:'낮'};
+  if(h<20) return {key:'evening', ko:'저녁'};
+  return {key:'night', ko:'밤'};
+}
+
+// ===== 속도 구간 =====
+function speedBucket(kmh){
+  if(kmh<5) return {key:'stop', ko:'정차', energy:'잔잔한'};
+  if(kmh<40) return {key:'city', ko:'시내', energy:'기분좋은'};
+  if(kmh<80) return {key:'country', ko:'국도', energy:'감성'};
+  return {key:'highway', ko:'고속도로', energy:'신나는'};
+}
+
+// ===== WMO 날씨코드 → 한국어 무드 =====
+function weatherFromCode(code, isDay){
+  if(code===0) return {key:'clear', ko:isDay?'맑음':'맑은 밤', mood:'청량한'};
+  if(code<=3) return {key:'cloudy', ko:'구름', mood:'잔잔한'};
+  if(code===45||code===48) return {key:'fog', ko:'안개', mood:'몽환적인'};
+  if(code>=51&&code<=67) return {key:'rain', ko:'비', mood:'비 오는'};
+  if(code>=71&&code<=77) return {key:'snow', ko:'눈', mood:'눈 내리는'};
+  if(code>=80&&code<=82) return {key:'rain', ko:'소나기', mood:'비 오는'};
+  if(code>=85&&code<=86) return {key:'snow', ko:'눈', mood:'눈 내리는'};
+  if(code>=95) return {key:'storm', ko:'뇌우', mood:'몰아치는'};
+  return {key:'clear', ko:'–', mood:''};
+}
+
+// ===== 날씨 가져오기 (Open-Meteo, 키 불필요) =====
+async function fetchWeather(lat,lon){
+  try{
+    const u=`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code,is_day`;
+    const r=await fetch(u); const j=await r.json();
+    const c=j.current;
+    const w=weatherFromCode(c.weather_code, c.is_day===1);
+    w.temp=Math.round(c.temperature_2m);
+    return w;
+  }catch(e){ log('날씨 실패: '+e.message); return null; }
+}
+
+// ===== 역지오코딩 (Nominatim, 키 불필요, best-effort) =====
+async function fetchPlace(lat,lon){
+  try{
+    const u=`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&zoom=14&accept-language=ko`;
+    const r=await fetch(u); const j=await r.json();
+    const a=j.address||{};
+    const name = a.city||a.town||a.village||a.county||a.suburb||a.road||j.name||'알 수 없음';
+    // 자연지형 힌트로 placeType 보정
+    const cat=(j.category||'')+' '+(j.type||'')+' '+(a.natural||'');
+    let type='city';
+    if(/coast|beach|bay|water|sea|harbour/i.test(cat) || a.natural==='water') type='coast';
+    else if(/peak|mountain|forest|wood|natural/i.test(cat)) type='mountain';
+    else if(/motorway|trunk/i.test(a.road||'')) type='highway';
+    else if(a.village||a.hamlet||a.farm) type='rural';
+    return {name, type};
+  }catch(e){ log('장소 실패: '+e.message); return null; }
+}
+
+// ===== 장소유형 → 한국어 단어 =====
+const placeWord = { coast:'해안도로', mountain:'산길', highway:'고속도로', rural:'시골길', city:'도심' };
+
+// ===== 무드 → YouTube 검색 쿼리 생성 =====
+function buildQuery(ctx){
+  const sb=speedBucket(ctx.speedKmh);
+  const wm=ctx.weather?ctx.weather.mood:'';
+  const tod=ctx.tod?ctx.tod.ko:'';
+  // 고속도로는 속도 구간이 더 신뢰도 높으니 우선
+  let pw = placeWord[ctx.placeType] || '드라이브';
+  if(sb.key==='highway') pw='고속도로';
+  const parts=[wm, tod, pw, sb.energy, '드라이브 플레이리스트'].filter(Boolean);
+  return parts.join(' ');
+}
+
+// ===== 시그니처: 이게 바뀔 때만 재검색 =====
+function signature(ctx){
+  return [speedBucket(ctx.speedKmh).key,
+          ctx.weather?ctx.weather.key:'?',
+          ctx.tod?ctx.tod.key:'?',
+          ctx.placeType].join('|');
+}
+
+// ===== YouTube 검색 → 재생 =====
+async function searchAndPlay(query, force){
+  const key=$('apiKey').value.trim();
+  if(!key){ log('API 키 없음 — 검색 생략'); return; }
+  const now=Date.now();
+  if(!force && now-lastFetchTs<45000){ return; } // 디바운스 45s
+  lastFetchTs=now;
+  try{
+    const u=`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&videoCategoryId=10&maxResults=18&q=${encodeURIComponent(query)}&key=${key}`;
+    const r=await fetch(u); const j=await r.json();
+    if(j.error){ log('YT 오류: '+(j.error.message||'').slice(0,80)); return; }
+    const ids=(j.items||[]).map(it=>it.id.videoId).filter(Boolean);
+    if(!ids.length){ log('검색 결과 없음'); return; }
+    log(`검색 "${query}" → ${ids.length}곡`);
+    if(playerReady){
+      player.loadPlaylist({ playlist: ids });
+      player.setLoop(true);
+    }
+  }catch(e){ log('검색 실패: '+e.message); }
+}
+
+// ===== 컨텍스트 갱신 + 트리거 =====
+async function updateContext(force){
+  curContext.tod=timeOfDay();
+  // 날씨/장소는 위치가 있을 때만
+  render();
+  const sig=signature(curContext);
+  if(force || sig!==lastSignature){
+    lastSignature=sig;
+    const q=buildQuery(curContext);
+    log('상황 변화 → '+sig);
+    await searchAndPlay(q, force);
+  }
+}
+
+// ===== 화면 렌더 =====
+function render(){
+  const sb=speedBucket(curContext.speedKmh);
+  $('spd').innerHTML = `${Math.round(curContext.speedKmh)}<small> km/h · ${sb.ko}</small>`;
+  $('wx').textContent = curContext.weather ? `${curContext.weather.ko} ${curContext.weather.temp??''}°` : '–';
+  $('tod').textContent = curContext.tod ? curContext.tod.ko : '–';
+  $('loc').textContent = curContext.place ? `${curContext.place.name} · ${placeWord[curContext.placeType]||curContext.placeType}` : '위치 측정 중';
+  const q = buildQuery(curContext);
+  $('moodTxt').innerHTML = `검색어 → <span class="q">${q}</span>`;
+  $('pills').innerHTML = [sb.ko, curContext.weather?.ko, curContext.tod?.ko, placeWord[curContext.placeType]]
+    .filter(Boolean).map(p=>`<span class="pill">${p}</span>`).join('');
+}
+
+// ===== 위치 콜백 =====
+function onPos(p){
+  $('gpsDot').classList.add('on'); $('gpsTxt').textContent='GPS 연결됨';
+  const lat=p.coords.latitude, lon=p.coords.longitude, t=p.timestamp;
+  // 속도: coords.speed(m/s) 우선, 없으면 Haversine
+  let kmh;
+  if(p.coords.speed!=null && !isNaN(p.coords.speed)){ kmh=p.coords.speed*3.6; }
+  else if(lastFix){ const d=haversine(lastFix,{lat,lon}); const dt=(t-lastFix.t)/1000;
+    kmh = dt>0 ? (d/dt)*3.6 : 0; }
+  else kmh=0;
+  if(kmh<0||kmh>250) kmh=0;
+  speedSamples.push(kmh); if(speedSamples.length>5) speedSamples.shift();
+  curContext.speedKmh = speedSamples.reduce((a,b)=>a+b,0)/speedSamples.length;
+  lastFix={lat,lon,t};
+
+  // 날씨·장소는 throttle (90초마다, 또는 첫 fix)
+  const now=Date.now();
+  if(now-geocodeTs>90000 || !curContext.weather){
+    geocodeTs=now;
+    fetchWeather(lat,lon).then(w=>{ if(w){curContext.weather=w; updateContext(false);} });
+    fetchPlace(lat,lon).then(pl=>{ if(pl){curContext.place=pl; curContext.placeType=pl.type; updateContext(false);} });
+  }
+  updateContext(false);
+}
+function onPosErr(e){ $('gpsTxt').textContent='GPS 오류: '+e.message; log('GPS 오류: '+e.message); }
+
+// ===== YouTube IFrame API =====
+function loadYT(){
+  const tag=document.createElement('script');
+  tag.src='https://www.youtube.com/iframe_api';
+  document.body.appendChild(tag);
+}
+window.onYouTubeIframeAPIReady=function(){
+  player=new YT.Player('player',{
+    height:'100%', width:'100%',
+    playerVars:{ playsinline:1, autoplay:1, rel:0 },
+    events:{
+      onReady:()=>{ playerReady=true; log('플레이어 준비됨'); },
+      onError:(e)=>log('재생 오류 코드 '+e.data)
+    }
+  });
+};
+
+// ===== 시작 =====
+$('startBtn').addEventListener('click', ()=>{
+  const k=$('apiKey').value.trim();
+  if(k) localStorage.setItem('ytKey', k);
+  if(!('geolocation' in navigator)){ alert('이 브라우저는 위치를 지원하지 않아요.'); return; }
+  navigator.geolocation.watchPosition(onPos, onPosErr,
+    { enableHighAccuracy:true, maximumAge:2000, timeout:15000 });
+  log('위치 추적 시작');
+  $('keyCard').style.display='none';
+  // 시작 제스처로 자동재생 잠금 해제 → 무음 큐 후 첫 검색
+  updateContext(true);
+});
+
+$('skipBtn').addEventListener('click', ()=>{ if(playerReady) player.nextVideo(); });
+$('refreshBtn').addEventListener('click', ()=>{ updateContext(true); });
+
+// 저장된 키 복원
+const saved=localStorage.getItem('ytKey'); if(saved) $('apiKey').value=saved;
+loadYT();
+log('대기 중 — API 키 입력 후 시작을 누르세요.');
+</script>
+</body>
+</html>
