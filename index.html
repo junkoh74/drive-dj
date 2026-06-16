@@ -93,7 +93,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v6-short';   // 캐시 확인용 — 화면 제목 옆에 표시됨
+const VERSION = 'v7-playlist';   // 캐시 확인용 — 화면 제목 옆에 표시됨
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -270,7 +270,7 @@ async function filterToSongs(ids, key){
   }catch(e){ log('⚠️ 필터 예외: '+e.message); return ids; }
 }
 
-// ===== YouTube 검색 → 재생 =====
+// ===== 추천 파이프라인: 무드 플레이리스트 검색 → 멤버곡 추출 → 빈도/선호 정렬 → 재생 =====
 async function searchAndPlay(query, force){
   const key=$('apiKey').value.trim();
   if(!key){ log('API 키 없음 — 검색 생략'); return; }
@@ -278,25 +278,64 @@ async function searchAndPlay(query, force){
   if(!force && now-lastFetchTs<45000){ return; } // 디바운스 45s
   lastFetchTs=now;
   try{
-    // videoDuration=short(4분 미만) → 1시간짜리 믹스/모음이 구조적으로 안 잡히고 개별 곡만 옴
+    // 1) 무드에 맞는 '플레이리스트' 검색 (사람이 큐레이션한 곡 모음)
+    const su=`https://www.googleapis.com/youtube/v3/search?part=snippet&type=playlist&maxResults=6&q=${encodeURIComponent(query)}&key=${key}`;
+    const sr=await fetch(su); const sj=await sr.json();
+    if(sj.error){ log('YT 오류: '+(sj.error.message||'').slice(0,80)); return; }
+    const plists=(sj.items||[]).map(it=>it.id.playlistId).filter(Boolean);
+    if(!plists.length){ log('플레이리스트 없음 → 직접검색 폴백'); return searchVideosFallback(query, key); }
+
+    // 2) 각 플레이리스트의 멤버 곡 수집 + 중복 빈도 집계
+    const freq={}, meta={};
+    await Promise.all(plists.map(async pid=>{
+      try{
+        const pu=`https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId=${pid}&key=${key}`;
+        const pj=await (await fetch(pu)).json();
+        (pj.items||[]).forEach(it=>{
+          const vid=it.snippet&&it.snippet.resourceId&&it.snippet.resourceId.videoId;
+          const title=(it.snippet&&it.snippet.title)||'';
+          if(!vid || title==='Deleted video' || title==='Private video') return;
+          freq[vid]=(freq[vid]||0)+1;
+          meta[vid]={title, channel:(it.snippet.videoOwnerChannelTitle||it.snippet.channelTitle||'')};
+        });
+      }catch(e){}
+    }));
+    candMeta=meta;
+    let pool=Object.keys(freq).filter(id=>!prefs.blocked[id]);
+    if(!pool.length){ log('곡 풀 비어있음 → 폴백'); return searchVideosFallback(query, key); }
+
+    // 3) '주로 추천되는' 순서 = 여러 모음에 중복 등장한 곡 우선, 그다음 선호 아티스트
+    const orderBy=(a,b)=> (freq[b]-freq[a]) || ((prefs.channel[meta[b].channel]||0)-(prefs.channel[meta[a].channel]||0));
+    pool.sort(orderBy);
+
+    // 4) 상위 후보만 길이검증(긴 멤버·삭제영상 제거)
+    const top=pool.slice(0,40);
+    let songs=(await filterToSongs(top, key)).filter(id=>!prefs.blocked[id]);
+    songs.sort(orderBy);
+    if(!songs.length){ log('검증 후 곡 없음 → 폴백'); return searchVideosFallback(query, key); }
+
+    const maxF=Math.max.apply(null, Object.values(freq));
+    log(`플레이리스트 ${plists.length}개 → 곡풀 ${pool.length} → 재생 ${songs.length} (최다중복 ${maxF}회)`);
+    if(playerReady){ player.loadPlaylist(songs, 0); player.setLoop(true); }
+  }catch(e){ log('추천 실패: '+e.message); }
+}
+
+// 폴백: 플레이리스트가 안 잡힐 때 짧은 개별 곡 직접 검색
+async function searchVideosFallback(query, key){
+  try{
     const u=`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&videoCategoryId=10&videoDuration=short&maxResults=25&q=${encodeURIComponent(query)}&key=${key}`;
-    const r=await fetch(u); const j=await r.json();
+    const j=await (await fetch(u)).json();
     if(j.error){ log('YT 오류: '+(j.error.message||'').slice(0,80)); return; }
     candMeta={};
     (j.items||[]).forEach(it=>{ if(it.id.videoId) candMeta[it.id.videoId]={title:it.snippet.title, channel:it.snippet.channelTitle}; });
     let ids=Object.keys(candMeta);
     if(!ids.length){ log('검색 결과 없음'); return; }
-    let songs=await filterToSongs(ids, key);     // 긴 믹스 제외, 개별 곡만
-    songs=songs.filter(id=>!prefs.blocked[id]);  // 싫어요한 곡 제외
-    // 좋아하는 아티스트(채널) 곡을 앞으로 정렬
+    let songs=(await filterToSongs(ids,key)).filter(id=>!prefs.blocked[id]);
     songs.sort((a,b)=>(prefs.channel[candMeta[b]?.channel]||0)-(prefs.channel[candMeta[a]?.channel]||0));
-    if(!songs.length){ log('차단 후 남은 곡 없음 — 재검색 필요'); return; }
-    log(`검색 "${query}" → 후보 ${ids.length} → 곡 ${songs.length}`);
-    if(playerReady){
-      player.loadPlaylist(songs, 0);   // 비디오 ID 배열은 인자형으로 전달해야 재생됨
-      player.setLoop(true);
-    }
-  }catch(e){ log('검색 실패: '+e.message); }
+    if(!songs.length){ log('차단 후 남은 곡 없음'); return; }
+    log(`폴백 직접검색 → 곡 ${songs.length}`);
+    if(playerReady){ player.loadPlaylist(songs, 0); player.setLoop(true); }
+  }catch(e){ log('폴백 실패: '+e.message); }
 }
 
 // ===== 컨텍스트 갱신 + 트리거 =====

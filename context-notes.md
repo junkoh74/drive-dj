@@ -30,3 +30,19 @@
 - 믹스/플레이리스트 영상이 아니라 개별 곡 추천으로 변경.
 - 검색어 접미사 `플레이리스트` → `노래`.
 - videos.list contentDetails로 재생시간 필터(90s~9min) 적용해 긴 믹스 제외. 남은 곡<5면 폴백(미적용).
+
+## 추천 파이프라인 전환 (v7, 2026-06-16)
+- 문제: 무드 키워드 검색(type=video)은 결과 전부가 1~3시간 믹스 단일영상. videoDuration=short도 한계.
+- 해법(사용자 제안): 플레이리스트를 곡 발굴 소스로 역이용.
+  1) search?type=playlist 로 무드 플레이리스트 6개.
+  2) playlistItems 로 각 멤버(개별 곡) 수집.
+  3) 여러 모음에 중복 등장한 곡 빈도 집계 → '대표곡' 우선.
+  4) 빈도 desc + 선호 아티스트 점수로 정렬.
+  5) 상위 40개 videos.list 길이검증(삭제/긴영상 제거) 후 재생.
+- 단일 긴영상은 type=playlist 검색에 안 잡혀 자연 배제됨.
+- 폴백: 플레이리스트 0개면 searchVideosFallback(type=video,short).
+- 쿼터: search(100)+playlistItems(6)+videos.list(1) ≈ 107 units/추천.
+
+## 광고 (2026-06-16)
+- 임베드 IFrame은 그 브라우저가 youtube.com 로그인(프리미엄) 상태여야 광고 제거. 비로그인이라 광고 발생.
+- 완전 무광고는 v2에서 YouTube OAuth 필요.
