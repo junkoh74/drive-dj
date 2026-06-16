@@ -93,7 +93,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v7-playlist';   // 캐시 확인용 — 화면 제목 옆에 표시됨
+const VERSION = 'v8-wakelock';   // 캐시 확인용 — 화면 제목 옆에 표시됨
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -112,6 +112,8 @@ let geocodeTs=0;             // Nominatim 호출 throttle
 let prefs = loadPrefs();
 let candMeta = {};   // 검색 후보 id -> {title, channel}
 let curId=null, curCh=null, curStart=0;  // 현재 곡 + 재생 시작시각(암묵 학습용)
+let pendingSongs=null;  // 상황변화로 준비된 다음 추천 (현재 곡 끝나면 반영)
+let wakeLock=null;      // 화면 꺼짐 방지 (주행 중 재생 유지)
 
 function loadPrefs(){
   try{ return JSON.parse(localStorage.getItem('djPrefs')) || {blocked:{}, channel:{}}; }
@@ -283,7 +285,7 @@ async function searchAndPlay(query, force){
     const sr=await fetch(su); const sj=await sr.json();
     if(sj.error){ log('YT 오류: '+(sj.error.message||'').slice(0,80)); return; }
     const plists=(sj.items||[]).map(it=>it.id.playlistId).filter(Boolean);
-    if(!plists.length){ log('플레이리스트 없음 → 직접검색 폴백'); return searchVideosFallback(query, key); }
+    if(!plists.length){ log('플레이리스트 없음 → 직접검색 폴백'); return searchVideosFallback(query, key, force); }
 
     // 2) 각 플레이리스트의 멤버 곡 수집 + 중복 빈도 집계
     const freq={}, meta={};
@@ -302,7 +304,7 @@ async function searchAndPlay(query, force){
     }));
     candMeta=meta;
     let pool=Object.keys(freq).filter(id=>!prefs.blocked[id]);
-    if(!pool.length){ log('곡 풀 비어있음 → 폴백'); return searchVideosFallback(query, key); }
+    if(!pool.length){ log('곡 풀 비어있음 → 폴백'); return searchVideosFallback(query, key, force); }
 
     // 3) '주로 추천되는' 순서 = 여러 모음에 중복 등장한 곡 우선, 그다음 선호 아티스트
     const orderBy=(a,b)=> (freq[b]-freq[a]) || ((prefs.channel[meta[b].channel]||0)-(prefs.channel[meta[a].channel]||0));
@@ -312,16 +314,16 @@ async function searchAndPlay(query, force){
     const top=pool.slice(0,40);
     let songs=(await filterToSongs(top, key)).filter(id=>!prefs.blocked[id]);
     songs.sort(orderBy);
-    if(!songs.length){ log('검증 후 곡 없음 → 폴백'); return searchVideosFallback(query, key); }
+    if(!songs.length){ log('검증 후 곡 없음 → 폴백'); return searchVideosFallback(query, key, force); }
 
     const maxF=Math.max.apply(null, Object.values(freq));
     log(`플레이리스트 ${plists.length}개 → 곡풀 ${pool.length} → 재생 ${songs.length} (최다중복 ${maxF}회)`);
-    if(playerReady){ player.loadPlaylist(songs, 0); player.setLoop(true); }
+    applyOrQueue(songs, force);
   }catch(e){ log('추천 실패: '+e.message); }
 }
 
 // 폴백: 플레이리스트가 안 잡힐 때 짧은 개별 곡 직접 검색
-async function searchVideosFallback(query, key){
+async function searchVideosFallback(query, key, force){
   try{
     const u=`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&videoCategoryId=10&videoDuration=short&maxResults=25&q=${encodeURIComponent(query)}&key=${key}`;
     const j=await (await fetch(u)).json();
@@ -334,9 +336,54 @@ async function searchVideosFallback(query, key){
     songs.sort((a,b)=>(prefs.channel[candMeta[b]?.channel]||0)-(prefs.channel[candMeta[a]?.channel]||0));
     if(!songs.length){ log('차단 후 남은 곡 없음'); return; }
     log(`폴백 직접검색 → 곡 ${songs.length}`);
-    if(playerReady){ player.loadPlaylist(songs, 0); player.setLoop(true); }
+    applyOrQueue(songs, force);
   }catch(e){ log('폴백 실패: '+e.message); }
 }
+
+// ===== 재생 반영: 즉시 vs 현재 곡 끝난 뒤 =====
+// force=true(시작/수동 새로고침) 또는 재생 중이 아니면 즉시. 재생 중이면 곡 끝날 때까지 대기.
+function applyOrQueue(songs, force){
+  if(!playerReady) return;
+  const st = player.getPlayerState ? player.getPlayerState() : -1;
+  const playing = (st===1 || st===3); // PLAYING or BUFFERING
+  if(force || !playing){
+    pendingSongs=null;
+    player.loadPlaylist(songs, 0); player.setLoop(true);
+    log('새 추천 즉시 반영 ('+songs.length+'곡)');
+  } else {
+    pendingSongs=songs;
+    log('현재 곡 끝나면 반영 예정 ('+songs.length+'곡 대기)');
+    $('nowPlaying').dataset.pending='1';
+  }
+}
+function applyPending(){
+  if(!pendingSongs || !playerReady) return;
+  const s=pendingSongs; pendingSongs=null;
+  player.loadPlaylist(s, 0); player.setLoop(true);
+  delete $('nowPlaying').dataset.pending;
+  log('현재 곡 종료 → 새 추천 반영');
+}
+// 대기 중인 추천을 현재 곡이 끝나는 시점에 반영 (1초마다 잔여시간 체크)
+setInterval(()=>{
+  if(!pendingSongs || !playerReady || !player.getPlayerState) return;
+  if(player.getPlayerState()===0){ applyPending(); return; } // ENDED
+  const dur=player.getDuration?player.getDuration():0;
+  const cur=player.getCurrentTime?player.getCurrentTime():0;
+  if(dur>0 && dur-cur<=1.2) applyPending();
+}, 1000);
+
+// ===== 화면 꺼짐 방지 (주행 중 재생 유지) =====
+async function requestWake(){
+  try{
+    if('wakeLock' in navigator){
+      wakeLock=await navigator.wakeLock.request('screen');
+      log('화면 켜짐 유지(WakeLock) 활성');
+      wakeLock.addEventListener('release', ()=>{ wakeLock=null; });
+    } else { log('이 브라우저는 WakeLock 미지원 — 화면 자동잠금을 꺼주세요'); }
+  }catch(e){ log('WakeLock 실패: '+e.message); }
+}
+// 탭이 다시 보이면 WakeLock 재요청 (백그라운드 갔다 오면 해제되므로)
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible' && !wakeLock) requestWake(); });
 
 // ===== 컨텍스트 갱신 + 트리거 =====
 async function updateContext(force){
@@ -418,6 +465,7 @@ $('startBtn').addEventListener('click', ()=>{
     { enableHighAccuracy:true, maximumAge:2000, timeout:15000 });
   log('위치 추적 시작');
   $('keyCard').style.display='none';
+  requestWake();  // 화면 꺼짐 방지 (사용자 제스처 안에서 호출해야 함)
   // 시작 제스처로 자동재생 잠금 해제 → 무음 큐 후 첫 검색
   updateContext(true);
 });
