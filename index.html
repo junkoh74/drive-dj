@@ -99,6 +99,8 @@
       <button class="ghost" id="refreshBtn">↻ 지금 상황 반영</button>
     </div>
     <div id="prefStat" style="font-size:12px;color:var(--mut);margin-top:8px"></div>
+    <button class="ghost" id="prefToggle" style="margin-top:8px;font-size:13px;padding:9px">취향 목록 보기</button>
+    <div id="prefPanel" style="display:none;margin-top:8px;font-size:12px;line-height:1.7"></div>
   </div>
 
   <div class="card">
@@ -108,7 +110,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v16-queue';
+const VERSION = 'v17-prefs';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -128,9 +130,22 @@ let prefs = loadPrefs();   // {blocked:{uri:1}, artist:{name:score}}
 function loadPrefs(){ try{ const p=JSON.parse(localStorage.getItem('djPrefsSp')); return p&&p.blocked?p:{blocked:{},artist:{}}; }catch(e){ return {blocked:{},artist:{}}; } }
 function savePrefs(){ localStorage.setItem('djPrefsSp', JSON.stringify(prefs)); renderPref(); }
 function bumpArtist(a,d){ if(!a) return; prefs.artist[a]=(prefs.artist[a]||0)+d; }
+function esc(s){ return String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function renderPref(){
   const liked=Object.values(prefs.artist).filter(v=>v>0).length;
   $('prefStat').textContent = `취향 학습 — 선호 아티스트 ${liked} · 차단 곡 ${Object.keys(prefs.blocked).length}`;
+  if($('prefPanel').style.display!=='none') renderPrefPanel();
+}
+function renderPrefPanel(){
+  const arts=Object.entries(prefs.artist).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]);
+  const blocked=Object.entries(prefs.blocked);
+  let h='<div style="color:var(--fg);font-weight:600;margin:4px 0">👍 선호 아티스트</div>';
+  h+= arts.length ? arts.map(([n,v])=>`<div>${esc(n)} <span style="color:var(--mut)">+${v.toFixed(1)}</span></div>`).join('')
+                  : '<div style="color:var(--mut)">아직 없음</div>';
+  h+='<div style="color:var(--fg);font-weight:600;margin:12px 0 4px">🚫 차단 곡</div>';
+  h+= blocked.length ? blocked.map(([uri,name])=>`<div style="margin:2px 0">${esc(typeof name==='string'?name:uri)} <a href="#" data-unblock="${esc(uri)}" style="color:var(--acc)">[해제]</a></div>`).join('')
+                     : '<div style="color:var(--mut)">없음</div>';
+  $('prefPanel').innerHTML=h;
 }
 
 // =====================================================================
@@ -367,7 +382,7 @@ async function rate(good){
   const uri=nowState.uri; if(!uri) return;
   const name=(candMeta[uri]&&candMeta[uri].name)||uri, ar=lastArtist;
   if(good){ bumpArtist(ar,1); log('👍 '+name); }
-  else { prefs.blocked[uri]=1; bumpArtist(ar,-1); log('👎 차단 '+name); skipNext(); }
+  else { prefs.blocked[uri]=name; bumpArtist(ar,-1); log('👎 차단 '+name); skipNext(); }
   savePrefs();
 }
 
@@ -447,6 +462,15 @@ async function skipNext(){
 }
 $('skipBtn').addEventListener('click', skipNext);
 $('refreshBtn').addEventListener('click', ()=>updateContext(true));
+$('prefToggle').addEventListener('click', ()=>{
+  const p=$('prefPanel'); const open=p.style.display==='none';
+  p.style.display=open?'block':'none'; $('prefToggle').textContent=open?'취향 목록 닫기':'취향 목록 보기';
+  if(open) renderPrefPanel();
+});
+$('prefPanel').addEventListener('click', e=>{
+  const a=e.target.closest('[data-unblock]'); if(!a) return; e.preventDefault();
+  delete prefs.blocked[a.getAttribute('data-unblock')]; log('차단 해제'); savePrefs();
+});
 
 // ===== 초기화 =====
 (async function init(){
