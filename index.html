@@ -72,10 +72,16 @@
   <!-- 플레이어 -->
   <div class="card">
     <div id="player"></div>
+    <div id="nowPlaying" style="font-size:13px;color:var(--mut);margin:10px 0 4px;min-height:18px"></div>
+    <div class="grid2" style="margin-top:6px">
+      <button class="ghost" id="badBtn" style="background:#3a2230">👎 싫어요</button>
+      <button class="ghost" id="goodBtn" style="background:#1f3a2e">👍 좋아요</button>
+    </div>
     <div class="grid2" style="margin-top:10px">
       <button class="ghost" id="skipBtn">⏭ 다음 곡</button>
       <button class="ghost" id="refreshBtn">↻ 지금 상황 반영</button>
     </div>
+    <div id="prefStat" style="font-size:12px;color:var(--mut);margin-top:8px"></div>
   </div>
 
   <div class="card">
@@ -97,6 +103,43 @@ let lastSignature=null;      // 재검색 트리거용 시그니처
 let lastFetchTs=0;           // 재검색 디바운스
 let curContext={ speedKmh:0, weather:null, tod:null, place:null, placeType:'city' };
 let geocodeTs=0;             // Nominatim 호출 throttle
+
+// ===== 취향(preference) — localStorage 영구 저장 =====
+// blocked: {videoId:1} 다시 안 틀 곡 / channel: {채널명:점수} 아티스트 선호도
+let prefs = loadPrefs();
+let candMeta = {};   // 검색 후보 id -> {title, channel}
+let curId=null, curCh=null, curStart=0;  // 현재 곡 + 재생 시작시각(암묵 학습용)
+
+function loadPrefs(){
+  try{ return JSON.parse(localStorage.getItem('djPrefs')) || {blocked:{}, channel:{}}; }
+  catch(e){ return {blocked:{}, channel:{}}; }
+}
+function savePrefs(){ localStorage.setItem('djPrefs', JSON.stringify(prefs)); renderPref(); }
+function bumpChannel(ch, d){ if(!ch) return; prefs.channel[ch]=(prefs.channel[ch]||0)+d; }
+function renderPref(){
+  const liked=Object.entries(prefs.channel).filter(([,v])=>v>0).length;
+  const blocked=Object.keys(prefs.blocked).length;
+  $('prefStat').textContent = `취향 학습 — 선호 아티스트 ${liked} · 차단 곡 ${blocked}`;
+}
+
+// 명시적 평가: 좋아요(+1) / 싫어요(-1, 즉시 차단)
+function rate(good){
+  const d = playerReady && player.getVideoData ? player.getVideoData() : null;
+  const id=d&&d.video_id, ch=d&&d.author;
+  if(!id){ return; }
+  if(good){ bumpChannel(ch, 1); log('👍 '+(d.title||id)); }
+  else { prefs.blocked[id]=1; bumpChannel(ch, -1); log('👎 차단 '+(d.title||id)); }
+  savePrefs();
+  if(!good && playerReady) player.nextVideo();  // 싫어요는 바로 넘김
+}
+// 암묵 평가: 끝까지=약한+, 빨리 스킵=약한-
+function implicitOnLeave(){
+  if(!curCh || !curStart) return;
+  const played=(Date.now()-curStart)/1000;
+  if(played>=60) bumpChannel(curCh, 0.3);
+  else if(played<20) bumpChannel(curCh, -0.3);
+  savePrefs();
+}
 
 // ===== 거리 계산 (Haversine, m) =====
 function haversine(a,b){
@@ -222,9 +265,15 @@ async function searchAndPlay(query, force){
     const u=`https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&videoCategoryId=10&maxResults=25&q=${encodeURIComponent(query)}&key=${key}`;
     const r=await fetch(u); const j=await r.json();
     if(j.error){ log('YT 오류: '+(j.error.message||'').slice(0,80)); return; }
-    let ids=(j.items||[]).map(it=>it.id.videoId).filter(Boolean);
+    candMeta={};
+    (j.items||[]).forEach(it=>{ if(it.id.videoId) candMeta[it.id.videoId]={title:it.snippet.title, channel:it.snippet.channelTitle}; });
+    let ids=Object.keys(candMeta);
     if(!ids.length){ log('검색 결과 없음'); return; }
-    const songs=await filterToSongs(ids, key);   // 긴 믹스 제외, 개별 곡만
+    let songs=await filterToSongs(ids, key);     // 긴 믹스 제외, 개별 곡만
+    songs=songs.filter(id=>!prefs.blocked[id]);  // 싫어요한 곡 제외
+    // 좋아하는 아티스트(채널) 곡을 앞으로 정렬
+    songs.sort((a,b)=>(prefs.channel[candMeta[b]?.channel]||0)-(prefs.channel[candMeta[a]?.channel]||0));
+    if(!songs.length){ log('차단 후 남은 곡 없음 — 재검색 필요'); return; }
     log(`검색 "${query}" → 후보 ${ids.length} → 곡 ${songs.length}`);
     if(playerReady){
       player.loadPlaylist(songs, 0);   // 비디오 ID 배열은 인자형으로 전달해야 재생됨
@@ -298,7 +347,8 @@ window.onYouTubeIframeAPIReady=function(){
     playerVars:{ playsinline:1, autoplay:1, rel:0 },
     events:{
       onReady:()=>{ playerReady=true; log('플레이어 준비됨'); },
-      onError:(e)=>log('재생 오류 코드 '+e.data)
+      onError:(e)=>log('재생 오류 코드 '+e.data),
+      onStateChange:onState
     }
   });
 };
@@ -316,8 +366,21 @@ $('startBtn').addEventListener('click', ()=>{
   updateContext(true);
 });
 
-$('skipBtn').addEventListener('click', ()=>{ if(playerReady) player.nextVideo(); });
+// 곡이 바뀔 때 직전 곡의 암묵 평가 → 새 곡 정보 갱신
+function onState(e){
+  if(e.data===YT.PlayerState.PLAYING){
+    const d=player.getVideoData();
+    if(d && d.video_id!==curId){ implicitOnLeave(); curId=d.video_id; curCh=d.author; curStart=Date.now(); }
+    $('nowPlaying').textContent='♪ '+(d.title||'');
+  }
+  // 곡 종료 시엔 다음 곡 PLAYING 전환에서 직전 곡을 평가하므로 여기선 가산하지 않음(이중 가산 방지)
+}
+
+$('goodBtn').addEventListener('click', ()=>rate(true));
+$('badBtn').addEventListener('click', ()=>rate(false));
+$('skipBtn').addEventListener('click', ()=>{ implicitOnLeave(); if(playerReady) player.nextVideo(); });
 $('refreshBtn').addEventListener('click', ()=>{ updateContext(true); });
+renderPref();
 
 // 저장된 키 복원
 const saved=localStorage.getItem('ytKey'); if(saved) $('apiKey').value=saved;
