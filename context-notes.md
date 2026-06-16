@@ -56,3 +56,10 @@
 - **제약:** (1) Spotify Premium 필수(재생제어), (2) 폰 Spotify 앱이 켜져 활성 기기여야 함(없으면 404), (3) /recommendations·audio-features는 신규앱 deprecated → search만 사용.
 - **취향:** prefs.blocked(uri), prefs.artist(점수). localStorage 'djPrefsSp'.
 - 상황변화는 폴링(3s)으로 현재 곡 끝나는 시점에 반영(pendingUris).
+
+## 제품화 로드맵 — 앱으로 만들기 (2026-06-16 합의)
+- 현재 "사용자가 Client ID 직접 입력"은 개발자용 임시 방식. 일반 사용자엔 부적합.
+- **핵심 변화: Client ID를 우리가 보유.** PKCE라 Client ID 공개 안전 → 앱에 내장 → 사용자는 "Spotify로 로그인" 버튼만 탭.
+- **관문 1: Extended Quota Mode 신청.** 개발모드는 본인+수동등록 25명 한정. 불특정 다수 로그인하려면 Spotify에 Extended Quota Mode 심사 신청 필요.
+- **관문 2: 네이티브 앱.** iOS/Android + Spotify SDK → 매끄러운 백그라운드 제어, 안정적 GPS, 스토어 배포, 딥링크로 Spotify 앱 자동 실행.
+- 로드맵: (지금) 웹+내 ClientID 입력/본인만 → (v2) PWA+우리 ClientID 내장+"Spotify 로그인" → (v3) 네이티브앱+Spotify SDK.
