@@ -113,7 +113,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v21-err';
+const VERSION = 'v22-userpl';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -305,7 +305,9 @@ async function minePlaylists(query){
   const freq={}, meta={};
   const sj=(await searchApi('playlist', query))||{};
   const items=(sj.playlists&&sj.playlists.items)||[];
-  const pls=items.filter(Boolean).map(p=>p.id).slice(0,8);
+  // Spotify 공식 플레이리스트는 곡 접근이 403으로 막힘 → 유저가 만든 것만 채굴
+  const userPls=items.filter(p=>p&&p.id&&p.owner&&p.owner.id!=='spotify');
+  const pls=userPls.map(p=>p.id).slice(0,10);
   let trackFail=0, firstErr='';
   await Promise.all(pls.map(async pid=>{
     try{ const pj=await api('/playlists/'+pid+'/tracks?market=KR&fields='+encodeURIComponent('items(track(uri,name,artists(name)))'));
@@ -313,7 +315,7 @@ async function minePlaylists(query){
         freq[tr.uri]=(freq[tr.uri]||0)+1; meta[tr.uri]={name:tr.name, artist:(tr.artists&&tr.artists[0]&&tr.artists[0].name)||''}; });
     }catch(e){ trackFail++; if(!firstErr) firstErr=(e.status||'?')+' '+(e.message||''); }
   }));
-  log(`PL "${query.slice(0,16)}": 결과 ${items.length}/유효 ${pls.length}/곡 ${Object.keys(freq).length}`+(trackFail?(' /트랙실패 '+trackFail+' ['+firstErr+']'):''));
+  log(`PL "${query.slice(0,16)}": 검색 ${items.length}/유저PL ${userPls.length}/곡 ${Object.keys(freq).length}`+(trackFail?(' /실패 '+trackFail+' ['+firstErr+']'):''));
   return {freq, meta, plCount:pls.length};
 }
 // 풀을 (중복빈도 → 선호아티스트) 순으로 정렬해 uri 배열 반환
@@ -343,6 +345,17 @@ async function searchAndPlay(force){
     let uris=koList.slice(0,koN).concat(foList.slice(0,foN));
     if(uris.length<N){ uris=uris.concat(koList.slice(koN), foList.slice(foN)); }
     uris=Array.from(new Set(uris)).slice(0,N);
+
+    // 폴백: 유저 플레이리스트가 없어 곡이 비면 트랙 검색으로 최소한 채움
+    if(!uris.length){
+      const q = koRatio>=50 ? buildQueryKo(curContext) : buildQueryEn(curContext);
+      const tj=(await searchApi('track', q))||{};
+      const list=[];
+      (((tj.tracks&&tj.tracks.items)||[]).filter(Boolean)).forEach(tr=>{
+        if(tr.uri && !prefs.blocked[tr.uri]){ candMeta[tr.uri]={name:tr.name, artist:(tr.artists&&tr.artists[0]&&tr.artists[0].name)||''}; list.push(tr.uri); } });
+      uris=list.slice(0,N);
+      if(uris.length) log('유저 플레이리스트 없음 → 트랙검색 폴백 '+uris.length+'곡');
+    }
     if(!uris.length){ log('재생할 곡 없음'); return; }
 
     const koTaken=uris.filter(u=>ko.freq[u]).length;
