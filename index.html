@@ -101,7 +101,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v12-diag';
+const VERSION = 'v13-probe';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -258,6 +258,22 @@ function signature(ctx){
   return [speedBucket(ctx.speedKmh).key, ctx.weather?ctx.weather.key:'?', ctx.tod?ctx.tod.key:'?', ctx.placeType].join('|');
 }
 
+// ===== 자가진단 검색: 파라미터를 하나씩 빼며 성공하는 조합을 찾음 =====
+async function searchApi(type, q){
+  const eq=encodeURIComponent(q);
+  const variants=[
+    {label:'limit+market', u:`/search?type=${type}&limit=20&market=KR&q=${eq}`},
+    {label:'limit만',      u:`/search?type=${type}&limit=20&q=${eq}`},
+    {label:'market만',     u:`/search?type=${type}&market=KR&q=${eq}`},
+    {label:'기본',         u:`/search?type=${type}&q=${eq}`},
+  ];
+  for(const v of variants){
+    try{ const j=await api(v.u); log('검색 OK ('+type+'/'+v.label+')'); return j; }
+    catch(e){ log('검색 X ('+type+'/'+v.label+'): '+e.message); }
+  }
+  return null;
+}
+
 // =====================================================================
 //  추천: 무드 플레이리스트 검색 → 트랙 추출 → 빈도/선호 정렬 → 재생
 // =====================================================================
@@ -270,7 +286,7 @@ async function searchAndPlay(query, force){
 
     const freq={}, meta={};
     // 1) 무드 플레이리스트
-    const sj=await api('/search?type=playlist&limit=20&market=KR&q='+encodeURIComponent(query));
+    const sj=(await searchApi('playlist', query))||{};
     const pls=(((sj.playlists&&sj.playlists.items)||[]).filter(Boolean)).map(p=>p.id).slice(0,8);
     if(pls.length){
       await Promise.all(pls.map(async pid=>{
@@ -284,7 +300,7 @@ async function searchAndPlay(query, force){
     let pool=Object.keys(freq).filter(u=>!prefs.blocked[u]);
     // 2) 폴백: 트랙 직접 검색
     if(pool.length<5){
-      const tj=await api('/search?type=track&limit=30&market=KR&q='+encodeURIComponent(query));
+      const tj=(await searchApi('track', query))||{};
       (((tj.tracks&&tj.tracks.items)||[]).filter(Boolean)).forEach(tr=>{
         if(tr.uri && !prefs.blocked[tr.uri]){ if(!freq[tr.uri]) freq[tr.uri]=1;
           meta[tr.uri]={name:tr.name, artist:(tr.artists&&tr.artists[0]&&tr.artists[0].name)||''}; } });
