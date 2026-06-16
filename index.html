@@ -101,7 +101,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v14-nolimit';
+const VERSION = 'v15-skip';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -352,7 +352,7 @@ async function rate(good){
   const name=(candMeta[uri]&&candMeta[uri].name)||uri, ar=lastArtist;
   if(good){ bumpArtist(ar,1); log('👍 '+name); }
   else { prefs.blocked[uri]=1; bumpArtist(ar,-1); log('👎 차단 '+name);
-    try{ await api('/me/player/next',{method:'POST'}); }catch(e){} }
+    try{ await api('/me/player/next'+(deviceId?('?device_id='+deviceId):''),{method:'POST'}); setTimeout(pollPlayback,600); }catch(e){} }
   savePrefs();
 }
 
@@ -415,7 +415,12 @@ $('startBtn').addEventListener('click', async ()=>{
 });
 $('goodBtn').addEventListener('click', ()=>rate(true));
 $('badBtn').addEventListener('click', ()=>rate(false));
-$('skipBtn').addEventListener('click', async ()=>{ try{ await api('/me/player/next',{method:'POST'}); }catch(e){ log('스킵 실패: '+e.message); } });
+async function skipNext(){
+  try{ await api('/me/player/next'+(deviceId?('?device_id='+deviceId):''),{method:'POST'});
+    log('⏭ 다음 곡'); setTimeout(pollPlayback, 600); }
+  catch(e){ log('스킵 실패: '+e.message); }
+}
+$('skipBtn').addEventListener('click', skipNext);
 $('refreshBtn').addEventListener('click', ()=>updateContext(true));
 
 // ===== 초기화 =====
