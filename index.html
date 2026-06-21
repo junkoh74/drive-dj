@@ -85,13 +85,15 @@
 
   <!-- 장르 필터 -->
   <div class="card">
-    <div class="k" style="font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px">장르 필터 (쉼표로 구분, 부분일치)</div>
-    <label>포함 — 이 장르만 (비우면 전체)</label>
-    <input id="genreInc" placeholder="예: k-pop, city pop, r&b" autocomplete="off" />
-    <label style="margin-top:8px;display:block">제외 — 이 장르는 뺌</label>
-    <input id="genreExc" placeholder="예: trot, children, kids" autocomplete="off" />
+    <div class="k" style="font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px">장르 필터 (Spotify 장르에서 검색·선택)</div>
+    <datalist id="genreOptions"></datalist>
+    <label>포함 — 선택한 장르만 (비우면 전체)</label>
+    <input id="genreInc" list="genreOptions" placeholder="장르 검색 후 선택…" autocomplete="off" />
+    <div id="genreIncChips" style="margin-top:6px"></div>
+    <label style="margin-top:10px;display:block">제외 — 선택한 장르는 뺌</label>
+    <input id="genreExc" list="genreOptions" placeholder="장르 검색 후 선택…" autocomplete="off" />
+    <div id="genreExcChips" style="margin-top:6px"></div>
     <button class="ghost" id="genreApply" style="margin-top:10px">필터 적용 (재추천)</button>
-    <div id="genreSeen" style="font-size:11px;color:var(--mut);margin-top:8px"></div>
   </div>
 
   <!-- 재생 컨트롤 -->
@@ -124,7 +126,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v26';
+const VERSION = 'v27';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -361,7 +363,23 @@ async function fetchGenres(uris){
   }
   return gmap;
 }
-function getGenreList(which){ return (localStorage.getItem('genre_'+which)||'').toLowerCase().split(',').map(s=>s.trim()).filter(Boolean); }
+// 장르 선택 상태 + 알려진 장르 목록(기본 + 곡에서 발견한 것 누적 → 실제 존재 장르만 선택)
+function loadArr(k){ try{ return JSON.parse(localStorage.getItem(k))||[]; }catch(e){ return []; } }
+let incSel = loadArr('genre_inc'), excSel = loadArr('genre_exc');
+const BASE_GENRES = ['k-pop','k-rap','korean r&b','korean pop','korean ost','k-indie','trot','pop','dance pop','electropop','synth-pop','city pop','indie pop','indie rock','rock','alternative rock','r&b','hip hop','rap','trap','edm','house','deep house','lo-fi','jazz','soul','funk','classical','acoustic','ballad','singer-songwriter','folk','metal','punk','reggae','latin','j-pop','j-rock','anime','soundtrack','chill','ambient','bedroom pop','disco','blues','country'];
+let knownGenres = (()=>{ const s=new Set(BASE_GENRES); loadArr('seenGenres').forEach(g=>s.add(g)); incSel.concat(excSel).forEach(g=>s.add(g)); return s; })();
+function getGenreList(which){ return which==='inc'?incSel:excSel; }
+function populateGenreOptions(){ $('genreOptions').innerHTML = Array.from(knownGenres).sort().map(g=>`<option value="${esc(g)}"></option>`).join(''); }
+function renderGenreChips(){
+  const mk=(arr,which)=> arr.map((g,i)=>`<span class="pill" style="cursor:pointer" data-gdel="${which}:${i}">${esc(g)} ✕</span>`).join('') || '<span style="font-size:11px;color:var(--mut)">없음</span>';
+  $('genreIncChips').innerHTML=mk(incSel,'inc'); $('genreExcChips').innerHTML=mk(excSel,'exc');
+}
+function addGenre(which, val){
+  const g=(val||'').trim().toLowerCase(); if(!g) return;
+  const arr = which==='inc'?incSel:excSel;
+  if(arr.indexOf(g)<0){ arr.push(g); knownGenres.add(g); localStorage.setItem('genre_'+which, JSON.stringify(arr)); populateGenreOptions(); renderGenreChips(); }
+}
+function removeGenre(which, i){ const arr = which==='inc'?incSel:excSel; arr.splice(i,1); localStorage.setItem('genre_'+which, JSON.stringify(arr)); renderGenreChips(); }
 // 동시 실행 제한 (Spotify 검색 폭주 방지)
 async function mapLimit(arr, limit, fn){
   let i=0;
@@ -416,9 +434,9 @@ async function searchAndPlay(force){
       if(inc.length && !gs.some(g=>inc.some(x=>g.indexOf(x)>=0))) return false;
       return true;
     });
-    // 발견된 장르 상위 표시 (필터 단어 정하는 참고용)
-    const topG=Object.entries(seen).sort((a,b)=>b[1]-a[1]).slice(0,10).map(e=>e[0]);
-    $('genreSeen').textContent = topG.length? ('발견 장르: '+topG.join(', ')) : '';
+    // 발견된 장르를 드롭다운 목록에 누적 (실제 존재하는 장르만 선택 가능 → 오매칭 방지)
+    let gAdded=false; Object.keys(seen).forEach(g=>{ if(!knownGenres.has(g)){ knownGenres.add(g); gAdded=true; } });
+    if(gAdded){ localStorage.setItem('seenGenres', JSON.stringify(Array.from(knownGenres))); populateGenreOptions(); }
 
     // 선호 점수(아티스트/장르 결합) 높은 순 + 약간의 랜덤(다양성)
     const final=kept.sort((a,b)=> (scoreTrack(b)+Math.random()) - (scoreTrack(a)+Math.random())).slice(0,N);
@@ -569,11 +587,14 @@ async function skipNext(){
 }
 $('skipBtn').addEventListener('click', skipNext);
 $('refreshBtn').addEventListener('click', ()=>updateContext(true));
-$('genreApply').addEventListener('click', ()=>{
-  localStorage.setItem('genre_inc', $('genreInc').value);
-  localStorage.setItem('genre_exc', $('genreExc').value);
-  log('장르 필터 적용 → 재추천'); updateContext(true);
-});
+function bindGenreInput(id, which){
+  const el=$(id);
+  el.addEventListener('change', ()=>{ addGenre(which, el.value); el.value=''; });        // 드롭다운 선택/커밋
+  el.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); addGenre(which, el.value); el.value=''; } });
+}
+bindGenreInput('genreInc','inc'); bindGenreInput('genreExc','exc');
+document.addEventListener('click', e=>{ const c=e.target.closest('[data-gdel]'); if(!c) return; e.preventDefault(); const p=c.getAttribute('data-gdel').split(':'); removeGenre(p[0], +p[1]); });
+$('genreApply').addEventListener('click', ()=>{ log('장르 필터 적용 → 재추천'); updateContext(true); });
 $('prefToggle').addEventListener('click', ()=>{
   const p=$('prefPanel'); const open=p.style.display==='none';
   p.style.display=open?'block':'none'; $('prefToggle').textContent=open?'취향 목록 닫기':'취향 목록 보기';
@@ -597,7 +618,7 @@ $('prefPanel').addEventListener('click', async e=>{
   $('ver').textContent=VERSION; $('redir').textContent=REDIRECT; renderPref();
   const saved=localStorage.getItem('sp_cid'); if(saved) $('clientId').value=saved;
   const yk=localStorage.getItem('ytKey'); if(yk) $('ytKey').value=yk;
-  $('genreInc').value=localStorage.getItem('genre_inc')||''; $('genreExc').value=localStorage.getItem('genre_exc')||'';
+  populateGenreOptions(); renderGenreChips();
   const params=new URLSearchParams(location.search);
   if(params.get('code')){
     await exchangeCode(params.get('code'));
