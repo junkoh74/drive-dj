@@ -28,7 +28,13 @@
 - 백엔드 보호: Sign in with Apple, **App Attest/DeviceCheck**, rate limit, 캐싱.
 
 ### 캐싱 (비용 0 수렴)
-- **★ 핵심: `track_facts`(곡별 속성 캐시).** id(spotify track id/ISRC) → bpm(Deezer)·genres(Spotify 아티스트)·mood/energy/instruments(AI). **영구**(속성은 사실 → 안 변함). 같은 곡 재등장 시 API 건너뛰고 즉시 읽기 → 처리 빠름 + AI/Deezer 비용 곡당 1회로 고정(전 유저 공유). Phase 2에서 생성.
+- **★ 핵심: `track_facts`(곡별 속성 캐시) — 2026-06-23 생성 완료(dj-bot DB).** 컬럼: spotify_id(PK), isrc, name, artists[], artist_ids[], album, release_year, duration_ms, popularity, explicit, genres[], bpm(Deezer), energy/valence/danceability/acousticness(ReccoBeats 0~1, ID기반 무료급), analyzed_at, created_at. RLS on(백엔드 service_role만). **영구**(속성=사실). 같은 곡 재등장 시 외부 API 건너뜀.
+  - 결정: AI 악기/무드 분석은 오디오 파일 필요 → Spotify 오디오 못 받아 보류. energy/valence는 ReccoBeats(ID기반 무료급)로 채움.
+  - **정적 vs 변동 구분(2026-06-23)**: isrc·name·artists·album·release_year·duration·explicit·bpm·energy·valence·danceability·acousticness = 정적(1회). **popularity·genres = 변동** → `popularity_at`/`genres_at` 추가. popularity는 곡 재등장 시 매번 덮어씀(Spotify 트랙객체에 무료), genres는 TTL~30일 지나면 /artists 재조회.
+  - ⚠️ 장르 분류 개편/세분화 시 genre 문자열이 바뀜 → 학습 키 "아티스트/장르"가 드리프트할 수 있음(user_feedback 설계 때 고려: 키 매핑/마이그레이션 or 상위 장르로 정규화).
+  - 미완: 이 테이블을 채우는 백엔드 로직(Deezer BPM + ReccoBeats + Spotify 장르) = Phase 2.
+  - **진행(2026-06-23): `enrich` Edge Function 배포·검증 완료.** ReccoBeats `/v1/audio-features?ids={spotifyIds}`(배치, href에서 id추출)로 energy/valence/danceability/acousticness/tempo→bpm, tempo 없으면 Deezer `track/isrc:`로 bpm 폴백. 캐시 조회 후 부족분만 호출, track_facts upsert(service_role 자동주입). 입력 {tracks:[{id,isrc,name,popularity,genres,...}]}. 테스트: Blinding Lights bpm171/energy0.73, Mr.Brightside bpm148/energy0.92 → DB 저장 확인.
+  - 미완: 웹이 Spotify 매칭 후 enrich 호출(속성 채움) + 그 속성을 추천에 활용(BPM/energy 상황 매칭).
 - 보조: `yt_pool`(무드쿼리→후보 제목), 짧은 TTL, 멀티유저 쿼터용. `context_cache`(맥락→무드어휘/시드, 상황+언어 키).
 - 캐싱 X(매번 신선): **최종 선곡** → 셔플+이미들은곡제외+취향재정렬로 매번 다르게(새로움 유지).
 - 비용이 유저 수가 아니라 "새 곡·새 상황 수"에만 비례.

@@ -128,7 +128,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v28';
+const VERSION = 'v29';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -136,7 +136,8 @@ const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,
 // ===== 상태 =====
 let lastFix=null, speedSamples=[], lastSignature=null, lastFetchTs=0, geocodeTs=0;
 let curContext={ speedKmh:0, weather:null, tod:null, place:null, placeType:'city' };
-let candMeta={};          // uri -> {name, artist}
+let candMeta={};          // uri -> {name, artist, aid, genres}
+let trackData={};         // uri -> Spotify 원본 필드(enrich 전송용)
 let pendingUris=null;     // 현재 곡 끝나면 반영할 다음 추천
 let queueUris=[];         // 지금 재생 중인 추천 목록 (스킵 시 다음 곡 계산용)
 let deviceId=null;
@@ -338,6 +339,36 @@ async function ytTitlesBackend(queries){
     return j.results||{};
   }catch(e){ log('YouTube 백엔드 실패: '+e.message); return {}; }
 }
+// Spotify 트랙 객체 → track_facts/enrich용 필드
+function spotifyFields(tr){
+  const rd=tr.album&&tr.album.release_date;
+  return {
+    id: tr.id,
+    isrc: (tr.external_ids&&tr.external_ids.isrc)||null,
+    name: tr.name,
+    artists: (tr.artists||[]).map(a=>a.name),
+    artist_ids: (tr.artists||[]).map(a=>a.id),
+    album: (tr.album&&tr.album.name)||null,
+    release_year: rd? parseInt(String(rd).slice(0,4))||null : null,
+    duration_ms: tr.duration_ms||null,
+    popularity: (tr.popularity!=null)?tr.popularity:null,
+    explicit: !!tr.explicit
+  };
+}
+// 최종 곡들을 enrich 함수로 보내 속성 채움+캐싱 (백그라운드, 재생 안 막음)
+async function enrichTracks(uris){
+  try{
+    const tracks=uris.map(u=>{ const d=trackData[u]; if(!d) return null;
+      return Object.assign({}, d, { genres:(candMeta[u]&&candMeta[u].genres)||null }); }).filter(Boolean);
+    if(!tracks.length) return;
+    const r=await fetch(SUPA_URL+'/functions/v1/enrich',{ method:'POST',
+      headers:{ 'Authorization':'Bearer '+SUPA_ANON, 'Content-Type':'application/json' },
+      body:JSON.stringify({ tracks }) });
+    const j=await r.json();
+    if(j.error) log('enrich 오류: '+j.error);
+    else log('속성 캐싱 '+Object.keys(j.facts||{}).length+'곡 (신규분석 '+(j.enriched||0)+')');
+  }catch(e){ log('enrich 실패: '+e.message); }
+}
 // YouTube 영상 제목 → Spotify 검색용으로 정리
 function cleanTitle(t){
   return String(t)
@@ -419,14 +450,18 @@ async function searchAndPlay(force){
     if(!cand.length){ log('YouTube 곡 없음 (키/쿼터 확인)'); return; }
 
     // 2) Spotify에서 같은 곡 검색 → URI 확보
-    const uris=[], meta={}; let tried=0, miss=0;
+    const uris=[], meta={}; trackData={}; let tried=0, miss=0;
     await mapLimit(cand, 6, async (t)=>{
       const q=cleanTitle(t); if(!q) return; tried++;
       try{ const tj=await api('/search?type=track&market=KR&q='+encodeURIComponent(q));
         const items=(tj&&tj.tracks&&tj.tracks.items)||[];
         // 정확히 일치하는 곡만 채택 — 없으면 유사곡 대신 건너뜀
         const tr=items.find(x=> x&&x.uri && isGoodMatch(t, x));
-        if(tr && !prefs.blocked[tr.uri] && !meta[tr.uri]){ meta[tr.uri]={name:tr.name, artist:(tr.artists&&tr.artists[0]&&tr.artists[0].name)||'', aid:(tr.artists&&tr.artists[0]&&tr.artists[0].id)||''}; uris.push(tr.uri); }
+        if(tr && !prefs.blocked[tr.uri] && !meta[tr.uri]){
+          meta[tr.uri]={name:tr.name, artist:(tr.artists&&tr.artists[0]&&tr.artists[0].name)||'', aid:(tr.artists&&tr.artists[0]&&tr.artists[0].id)||''};
+          trackData[tr.uri]=spotifyFields(tr);
+          uris.push(tr.uri);
+        }
         else miss++;
       }catch(e){ miss++; }
     });
@@ -455,6 +490,7 @@ async function searchAndPlay(force){
     log(`매칭 ${uris.length} → 장르필터 후 ${final.length}곡`+((inc.length||exc.length)?` (제외 ${excluded}, 장르없음 ${noGenre})`:''));
     if(!final.length){ log('필터 통과 곡 없음 — 포함 장르를 비우거나 완화하세요'); return; }
     applyOrQueue(final, force);
+    enrichTracks(final);   // 속성 채워 track_facts에 캐싱 (백그라운드)
   }catch(e){
     if(e.status===401) log('인증 만료 — 다시 로그인하세요');
     else if(e.status===403) log('⚠️ 권한/Premium 문제: '+e.message);

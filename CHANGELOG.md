@@ -2,6 +2,11 @@
 
 > 버전은 **배포(GitHub Pages) 기준**으로 1씩 증가한다. 로컬 수정만으로는 버전을 올리지 않으며, 실제 배포할 때만 버전업 + 이 파일에 기록한다.
 
+## v29 — 2026-06-23
+- **곡 속성 수집 시작(Phase 2)**: 추천된 곡을 백엔드 `enrich` 함수로 보내 BPM·energy·valence·danceability·acousticness를 모아 `track_facts`에 캐싱.
+- 출처: ReccoBeats(audio-features, ID기반·무료급) 주력 + Deezer(bpm 폴백). 한 번 분석된 곡은 재사용.
+- 재생은 안 막고 백그라운드로 수집. 아직 추천 로직엔 미반영(데이터 축적 단계).
+
 ## v28 — 2026-06-23
 - **키 보호 백엔드 도입(Phase 1 시작)**: Supabase 프로젝트 `dj-bot` + Edge Function `yt-search`.
 - YouTube 검색을 백엔드가 키를 들고 대신 호출 → **클라이언트에서 YouTube API 키 제거**(입력칸 삭제). 키는 Supabase Secrets에만.
