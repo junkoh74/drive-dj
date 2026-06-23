@@ -1,5 +1,66 @@
 # Drive DJ 컨텍스트 노트
 
+## 제품 로드맵 (2026-06-23 브레인스토밍 정리)
+
+### 문제 정의 / 차별점
+- 문제: 같은 플레이리스트가 지겨워 새 곡을 원함. 그런데 Spotify/YouTube 추천이 (a)취향과 안 맞거나 (b)취향은 맞아도 **현재 무드와 안 맞음**.
+- 차별점: 더 나은 "취향 추천"이 아니라 **맥락(무드) 정합 + 새로움 통제**. (Spotify는 이미 취향은 앎.) BPM·악기는 수단의 하나일 뿐, 목적 아님.
+
+### 추천 코어 스택
+- 취향 부트스트랩: **Spotify 내 이력**(Get User's Top / Recently Played / Saved) — 추천기는 막혔어도 이력은 읽힘.
+- 새 곡 발굴(취향+새로움): **Last.fm**(track/artist.getSimilar, tag.getTopTracks) / ListenBrainz. (Spotify Recommendations는 신규앱 차단.)
+- 맥락→시드: **LLM** (상황·로케일 받아 그 언어로 무드 쿼리/시드 생성). 핵심 레버.
+- 개인화: 내 피드백(완청/스킵/좋아요) 상황 태깅 학습.
+- 새 곡 우선 **토글**(explore/exploit).
+- 보조(선택): BPM=Deezer(무료, JSONP), 오디오/무드/악기=Cyanite·Sonoteller·Music.AI(유료, 백엔드, ISRC매칭). 악기는 오버킬.
+- 재생: Spotify.
+
+### 활동 컨텍스트 + 센서
+- 타깃 상황: 헬스(혼자운동) / 러닝 / 자전거 / 차·오토바이 / 대중교통 출근 / 대중교통 주말.
+- **폰만으로**: iOS Core Motion(stationary·walking·running·cycling·automotive) + GPS → 러닝·자전거·차 감지. 출근vs주말=캘린더. 차vs대중교통=정차패턴 or 유저 확인.
+- **워치 필요**: 심박(헬스·강도). 실시간 심박은 watchOS 앱 필요.
+- 외부기기: 개별 SDK 대신 **HealthKit(iOS)/Health Connect(Android)** 허브 경유(Apple Watch 최적, Galaxy/Mi는 동기화 시).
+
+### 보안 / 멀티유저
+- **비밀키는 앱에 절대 X → 백엔드 프록시(BFF).**
+- Spotify: PKCE 유저 OAuth(Client ID 공개 OK, 토큰 iOS Keychain), >25명은 Extended Quota Mode 신청.
+- YouTube Data / LLM / Last.fm / AI분석: **백엔드에서만** 호출.
+- 백엔드 보호: Sign in with Apple, **App Attest/DeviceCheck**, rate limit, 캐싱.
+
+### 캐싱 (비용 0 수렴)
+- **★ 핵심: `track_facts`(곡별 속성 캐시).** id(spotify track id/ISRC) → bpm(Deezer)·genres(Spotify 아티스트)·mood/energy/instruments(AI). **영구**(속성은 사실 → 안 변함). 같은 곡 재등장 시 API 건너뛰고 즉시 읽기 → 처리 빠름 + AI/Deezer 비용 곡당 1회로 고정(전 유저 공유). Phase 2에서 생성.
+- 보조: `yt_pool`(무드쿼리→후보 제목), 짧은 TTL, 멀티유저 쿼터용. `context_cache`(맥락→무드어휘/시드, 상황+언어 키).
+- 캐싱 X(매번 신선): **최종 선곡** → 셔플+이미들은곡제외+취향재정렬로 매번 다르게(새로움 유지).
+- 비용이 유저 수가 아니라 "새 곡·새 상황 수"에만 비례.
+
+### 국제화
+- 기기 로케일 감지 → 그 언어로 검색어(LLM) → Spotify market=유저 국가, Nominatim accept-language=기기언어.
+
+### 수익/지속가능성
+- **유료화 목적 없음. 비영리·무료.**
+- 광고는 Spotify/YouTube 개발자 약관 위반 위험 → 비추.
+- 비용 충당: **캐싱(0 수렴)이 1순위** + 앱 밖 후원. (BYOK는 키 보호 백엔드 원칙과 충돌 → 영구 수단으로 안 씀. 현재 웹 프로토타입의 키 입력은 임시일 뿐.)
+- 참고: YouTube Data API 키 검색은 개인 YouTube 추천 알고리즘에 영향 없음(서버호출, 시청기록 미반영).
+
+### 단계 (번호 = 실행 순서)
+- **Phase 0 (현재)**: 웹 프로토타입 — 아이디어/로직 검증. (YouTube 채굴→Spotify 정확매칭→Spotify 재생, 취향·장르 필터.) ※ 현재는 키 직접 입력(임시 BYOK).
+- **★ Phase 1 (다음): 키 보호 백엔드 (얇게) — Supabase로 확정 (2026-06-23)**. 비밀키(YouTube/LLM/Last.fm/AI) 프록시 + 캐싱 + 클라이언트 인증. 이후 모든 지능을 이 위에서 안전하게 호출(BYOK 폐기).
+  - **Edge Functions**(Deno/TS) = 키 보호 프록시(Secrets에 키 보관, 클라는 함수만 호출). **Postgres** = 캐시(track_facts, context_cache) + 추후 유저데이터. **Auth + RLS** = 유저 격리.
+  - 조직 `junkoh74's Org`(nxotelzztwgymfrqdefs), 새 프로젝트 비용 $0/월. 기존 MetaCloset 프로젝트와 별개.
+  - 1단계 함수: `yt-search`(YouTube 프록시) → 웹을 BYOK 직접호출에서 이걸로 교체. CORS는 Pages 도메인 허용.
+  - **진행(2026-06-23)**: dj-bot 프로젝트 생성(ref rkaygkqucioliwhridbj, 서울). `yt-search` Edge Function 배포(verify_jwt=true). URL: https://rkaygkqucioliwhridbj.supabase.co/functions/v1/yt-search . body {queries:[...]} → {results:{q:[titles]}}. 시크릿 YOUTUBE_API_KEY는 대시보드에서 등록(MCP로 불가). 캐시 테이블은 Phase 2(BPM 등 실제 캐싱 시) 생성.
+  - 미완: 웹의 ytTitlesFor를 이 함수 호출로 교체(Authorization: Bearer <anon JWT>), 그 후 클라에서 YouTube 키 입력 제거.
+- **Phase 2: 추천 지능 고도화** (백엔드 위에서). ← **핵심 가치 검증.**
+  - Last.fm 유사곡(취향+새로움), LLM 맥락 매핑, BPM(Deezer), 필요시 AI 분석(무드/악기)
+  - 상황 태깅 취향 학습 + 새 곡 우선 토글
+  - 개인화 핸드오프(소프트 블렌딩: 개인화비율 = min(0.8, 긍정수/30), 항상 채굴 ≥20%)
+- **Phase 3 (폰 기준)**: iOS 앱. 폰 휴대 시나리오만(차·오토바이·자전거·폰 들고 러닝·대중교통).
+  - Core Motion 활동감지 + GPS + 날씨 → 맥락
+  - Spotify iOS SDK 백그라운드 재생
+  - Phase 1 백엔드 재사용 + App Attest + 로케일 대응
+- **Phase 4**: watchOS 앱 — 폰 없는 헬스·맨몸 러닝(워치 센서·심박, 셀룰러 워치, Spotify Web API 제어 제약).
+- (메모) 분리 순서 근거: 백엔드는 필수+얇아서 먼저 세우면 지능을 처음부터 안전하게 + 재배선 헛수고 없음. 반대안(지능 먼저)은 검증은 빠르나 BYOK 임시·재작업 발생.
+
 ## 취향 시스템 v28 (2026-06-21, 로컬 v28-prefcat / 미푸시)
 - prefs = { blocked:{uri:name}, fav:{"아티스트 / 장르":score}, liked:{uri:{name,artist}} }.
 - **선호 단위 = "아티스트 + 장르" 결합 카테고리**(따로 아님). 트랙의 (아티스트 × 각 장르) 조합마다 점수. 장르 없으면 "아티스트 / (unknown)".

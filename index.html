@@ -39,6 +39,10 @@
   .dot.on { background:var(--ok); }
   a { color:var(--acc); }
   .hint { font-size:12px; color:var(--mut); line-height:1.5; margin-top:8px; }
+  .gdrop { max-height:200px; overflow:auto; border:1px solid #2a3142; border-radius:10px; margin-top:6px; display:none; }
+  .gdrop.on { display:block; }
+  .gopt { padding:11px 12px; font-size:14px; border-bottom:1px solid #1c2230; cursor:pointer; }
+  .gopt:active { background:#222838; }
 </style>
 </head>
 <body>
@@ -57,9 +61,6 @@
   <div class="card" id="readyCard" style="display:none">
     <div id="who" style="font-size:14px;margin-bottom:4px"></div>
     <div id="device" style="font-size:12px;color:var(--mut);margin-bottom:10px"></div>
-    <label>YouTube Data API 키 (곡 검색용)</label>
-    <input id="ytKey" type="password" placeholder="AIza..." autocomplete="off" />
-    <div style="height:8px"></div>
     <button id="startBtn">▶ 주행 시작 (위치 추적)</button>
     <button class="ghost" id="logoutBtn" style="margin-top:8px">로그아웃</button>
   </div>
@@ -86,12 +87,13 @@
   <!-- 장르 필터 -->
   <div class="card">
     <div class="k" style="font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px">장르 필터 (Spotify 장르에서 검색·선택)</div>
-    <datalist id="genreOptions"></datalist>
     <label>포함 — 선택한 장르만 (비우면 전체)</label>
-    <input id="genreInc" list="genreOptions" placeholder="장르 검색 후 선택…" autocomplete="off" />
+    <input id="genreInc" placeholder="장르 검색…" autocomplete="off" />
+    <div id="genreIncList" class="gdrop"></div>
     <div id="genreIncChips" style="margin-top:6px"></div>
     <label style="margin-top:10px;display:block">제외 — 선택한 장르는 뺌</label>
-    <input id="genreExc" list="genreOptions" placeholder="장르 검색 후 선택…" autocomplete="off" />
+    <input id="genreExc" placeholder="장르 검색…" autocomplete="off" />
+    <div id="genreExcList" class="gdrop"></div>
     <div id="genreExcChips" style="margin-top:6px"></div>
     <button class="ghost" id="genreApply" style="margin-top:10px">필터 적용 (재추천)</button>
   </div>
@@ -126,7 +128,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v27';
+const VERSION = 'v28';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -323,19 +325,18 @@ function signature(ctx){
 
 
 // ===== YouTube: 무드 플레이리스트를 채굴해 곡 '제목'들을 수집 =====
-async function ytGet(url){ const j=await (await fetch(url)).json(); if(j.error) throw new Error((j.error.message||'YT').slice(0,60)); return j; }
-async function ytTitlesFor(query, key){
-  const titles=[];
+// YouTube 검색은 백엔드(Supabase Edge Function)가 키를 들고 대신 호출 → 클라엔 키 없음
+const SUPA_URL = 'https://rkaygkqucioliwhridbj.supabase.co';
+const SUPA_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJrYXlna3F1Y2lvbGl3aHJpZGJqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODIxNDE1MzksImV4cCI6MjA5NzcxNzUzOX0.QaBGMyqkum3KicwYzckUDi3IhB2pL0tIl0Ev6sY_j20';
+async function ytTitlesBackend(queries){
   try{
-    const sj=await ytGet(`https://www.googleapis.com/youtube/v3/search?part=snippet&type=playlist&maxResults=6&q=${encodeURIComponent(query)}&key=${key}`);
-    const pls=((sj.items||[]).map(it=>it.id&&it.id.playlistId).filter(Boolean)).slice(0,6);
-    await Promise.all(pls.map(async pid=>{
-      try{ const pj=await ytGet(`https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId=${pid}&key=${key}`);
-        (pj.items||[]).forEach(it=>{ const t=it.snippet&&it.snippet.title; if(t && t!=='Deleted video' && t!=='Private video') titles.push(t); });
-      }catch(e){}
-    }));
-  }catch(e){ log('YouTube 실패: '+e.message); }
-  return titles;
+    const r=await fetch(SUPA_URL+'/functions/v1/yt-search',{ method:'POST',
+      headers:{ 'Authorization':'Bearer '+SUPA_ANON, 'Content-Type':'application/json' },
+      body:JSON.stringify({ queries }) });
+    const j=await r.json();
+    if(j.error){ log('YouTube 백엔드 오류: '+j.error); return {}; }
+    return j.results||{};
+  }catch(e){ log('YouTube 백엔드 실패: '+e.message); return {}; }
 }
 // YouTube 영상 제목 → Spotify 검색용으로 정리
 function cleanTitle(t){
@@ -369,7 +370,18 @@ let incSel = loadArr('genre_inc'), excSel = loadArr('genre_exc');
 const BASE_GENRES = ['k-pop','k-rap','korean r&b','korean pop','korean ost','k-indie','trot','pop','dance pop','electropop','synth-pop','city pop','indie pop','indie rock','rock','alternative rock','r&b','hip hop','rap','trap','edm','house','deep house','lo-fi','jazz','soul','funk','classical','acoustic','ballad','singer-songwriter','folk','metal','punk','reggae','latin','j-pop','j-rock','anime','soundtrack','chill','ambient','bedroom pop','disco','blues','country'];
 let knownGenres = (()=>{ const s=new Set(BASE_GENRES); loadArr('seenGenres').forEach(g=>s.add(g)); incSel.concat(excSel).forEach(g=>s.add(g)); return s; })();
 function getGenreList(which){ return which==='inc'?incSel:excSel; }
-function populateGenreOptions(){ $('genreOptions').innerHTML = Array.from(knownGenres).sort().map(g=>`<option value="${esc(g)}"></option>`).join(''); }
+// 입력값 부분일치로 장르 후보 목록 표시 (직접 만든 검색 드롭다운)
+function filterGenres(which, q){
+  const listEl=$(which==='inc'?'genreIncList':'genreExcList');
+  q=(q||'').trim().toLowerCase();
+  const sel = which==='inc'?incSel:excSel;
+  let list = Array.from(knownGenres).filter(g=> sel.indexOf(g)<0);
+  if(q) list = list.filter(g=> g.indexOf(q)>=0);
+  list = list.sort().slice(0,50);
+  if(!list.length){ listEl.classList.remove('on'); listEl.innerHTML=''; return; }
+  listEl.innerHTML = list.map(g=>`<div class="gopt" data-gadd="${which}:::${esc(g)}">${esc(g)}</div>`).join('');
+  listEl.classList.add('on');
+}
 function renderGenreChips(){
   const mk=(arr,which)=> arr.map((g,i)=>`<span class="pill" style="cursor:pointer" data-gdel="${which}:${i}">${esc(g)} ✕</span>`).join('') || '<span style="font-size:11px;color:var(--mut)">없음</span>';
   $('genreIncChips').innerHTML=mk(incSel,'inc'); $('genreExcChips').innerHTML=mk(excSel,'exc');
@@ -377,7 +389,7 @@ function renderGenreChips(){
 function addGenre(which, val){
   const g=(val||'').trim().toLowerCase(); if(!g) return;
   const arr = which==='inc'?incSel:excSel;
-  if(arr.indexOf(g)<0){ arr.push(g); knownGenres.add(g); localStorage.setItem('genre_'+which, JSON.stringify(arr)); populateGenreOptions(); renderGenreChips(); }
+  if(arr.indexOf(g)<0){ arr.push(g); knownGenres.add(g); localStorage.setItem('genre_'+which, JSON.stringify(arr)); renderGenreChips(); }
 }
 function removeGenre(which, i){ const arr = which==='inc'?incSel:excSel; arr.splice(i,1); localStorage.setItem('genre_'+which, JSON.stringify(arr)); renderGenreChips(); }
 // 동시 실행 제한 (Spotify 검색 폭주 방지)
@@ -392,16 +404,16 @@ async function mapLimit(arr, limit, fn){
 // =====================================================================
 async function searchAndPlay(force){
   if(!tokens.access){ log('Spotify 로그인 필요'); return; }
-  const ytKey=$('ytKey').value.trim(); if(!ytKey){ log('YouTube API 키를 입력하세요'); return; }
   const now=Date.now(); if(!force && now-lastFetchTs<45000) return; lastFetchTs=now;
   try{
     const dev=await pickDevice();
     if(!dev){ log('⚠️ 활성 기기 없음 — 폰 Spotify에서 곡 재생 후 "↻"'); return; }
 
     const N=40, koN=20, foN=20;   // 한/영 절반씩 수집해 섞음
-    // 1) YouTube에서 무드 플레이리스트 채굴 → 곡 제목 수집 (한국어/영어 쿼리 둘 다)
-    const koT = await ytTitlesFor(buildQueryKo(curContext)+' 노래', ytKey);
-    const foT = await ytTitlesFor(buildQueryEn(curContext)+' songs', ytKey);
+    // 1) YouTube에서 무드 플레이리스트 채굴 → 곡 제목 수집 (백엔드가 키 들고 처리)
+    const koQ=buildQueryKo(curContext)+' 노래', foQ=buildQueryEn(curContext)+' songs';
+    const res=await ytTitlesBackend([koQ, foQ]);
+    const koT=res[koQ]||[], foT=res[foQ]||[];
     log(`YouTube 수집 — 한국 ${koT.length}/해외 ${foT.length} 제목`);
     const cand = shuffle(koT).slice(0, koN*2).concat(shuffle(foT).slice(0, foN*2));  // 매칭 실패 대비 2배수
     if(!cand.length){ log('YouTube 곡 없음 (키/쿼터 확인)'); return; }
@@ -436,7 +448,7 @@ async function searchAndPlay(force){
     });
     // 발견된 장르를 드롭다운 목록에 누적 (실제 존재하는 장르만 선택 가능 → 오매칭 방지)
     let gAdded=false; Object.keys(seen).forEach(g=>{ if(!knownGenres.has(g)){ knownGenres.add(g); gAdded=true; } });
-    if(gAdded){ localStorage.setItem('seenGenres', JSON.stringify(Array.from(knownGenres))); populateGenreOptions(); }
+    if(gAdded){ localStorage.setItem('seenGenres', JSON.stringify(Array.from(knownGenres))); }
 
     // 선호 점수(아티스트/장르 결합) 높은 순 + 약간의 랜덤(다양성)
     const final=kept.sort((a,b)=> (scoreTrack(b)+Math.random()) - (scoreTrack(a)+Math.random())).slice(0,N);
@@ -555,7 +567,6 @@ function showReady(connected){
 $('loginBtn').addEventListener('click', login);
 $('logoutBtn').addEventListener('click', ()=>{ localStorage.removeItem('sp_tok'); tokens={}; showReady(false); log('로그아웃됨'); });
 $('startBtn').addEventListener('click', async ()=>{
-  localStorage.setItem('ytKey', $('ytKey').value.trim());
   if(!('geolocation' in navigator)){ alert('위치 미지원 브라우저'); return; }
   await pickDevice();
   navigator.geolocation.watchPosition(onPos, onPosErr, { enableHighAccuracy:true, maximumAge:2000, timeout:15000 });
@@ -588,12 +599,20 @@ async function skipNext(){
 $('skipBtn').addEventListener('click', skipNext);
 $('refreshBtn').addEventListener('click', ()=>updateContext(true));
 function bindGenreInput(id, which){
-  const el=$(id);
-  el.addEventListener('change', ()=>{ addGenre(which, el.value); el.value=''; });        // 드롭다운 선택/커밋
-  el.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); addGenre(which, el.value); el.value=''; } });
+  const el=$(id), listId=which==='inc'?'genreIncList':'genreExcList';
+  el.addEventListener('input', ()=> filterGenres(which, el.value));
+  el.addEventListener('focus', ()=> filterGenres(which, el.value));
+  el.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); addGenre(which, el.value); el.value=''; $(listId).classList.remove('on'); } });
 }
 bindGenreInput('genreInc','inc'); bindGenreInput('genreExc','exc');
-document.addEventListener('click', e=>{ const c=e.target.closest('[data-gdel]'); if(!c) return; e.preventDefault(); const p=c.getAttribute('data-gdel').split(':'); removeGenre(p[0], +p[1]); });
+document.addEventListener('click', e=>{
+  const opt=e.target.closest('[data-gadd]');
+  if(opt){ const v=opt.getAttribute('data-gadd'); const i=v.indexOf(':::'); const which=v.slice(0,i), g=v.slice(i+3);
+    addGenre(which, g); $(which==='inc'?'genreInc':'genreExc').value=''; $(which==='inc'?'genreIncList':'genreExcList').classList.remove('on'); return; }
+  const c=e.target.closest('[data-gdel]');
+  if(c){ e.preventDefault(); const p=c.getAttribute('data-gdel').split(':'); removeGenre(p[0], +p[1]); return; }
+  if(!e.target.closest('#genreInc,#genreExc,.gdrop')){ $('genreIncList').classList.remove('on'); $('genreExcList').classList.remove('on'); }
+});
 $('genreApply').addEventListener('click', ()=>{ log('장르 필터 적용 → 재추천'); updateContext(true); });
 $('prefToggle').addEventListener('click', ()=>{
   const p=$('prefPanel'); const open=p.style.display==='none';
@@ -617,8 +636,7 @@ $('prefPanel').addEventListener('click', async e=>{
 (async function init(){
   $('ver').textContent=VERSION; $('redir').textContent=REDIRECT; renderPref();
   const saved=localStorage.getItem('sp_cid'); if(saved) $('clientId').value=saved;
-  const yk=localStorage.getItem('ytKey'); if(yk) $('ytKey').value=yk;
-  populateGenreOptions(); renderGenreChips();
+  renderGenreChips();
   const params=new URLSearchParams(location.search);
   if(params.get('code')){
     await exchangeCode(params.get('code'));
