@@ -34,7 +34,11 @@
   - ⚠️ 장르 분류 개편/세분화 시 genre 문자열이 바뀜 → 학습 키 "아티스트/장르"가 드리프트할 수 있음(user_feedback 설계 때 고려: 키 매핑/마이그레이션 or 상위 장르로 정규화).
   - 미완: 이 테이블을 채우는 백엔드 로직(Deezer BPM + ReccoBeats + Spotify 장르) = Phase 2.
   - **진행(2026-06-23): `enrich` Edge Function 배포·검증 완료.** ReccoBeats `/v1/audio-features?ids={spotifyIds}`(배치, href에서 id추출)로 energy/valence/danceability/acousticness/tempo→bpm, tempo 없으면 Deezer `track/isrc:`로 bpm 폴백. 캐시 조회 후 부족분만 호출, track_facts upsert(service_role 자동주입). 입력 {tracks:[{id,isrc,name,popularity,genres,...}]}. 테스트: Blinding Lights bpm171/energy0.73, Mr.Brightside bpm148/energy0.92 → DB 저장 확인.
-  - 미완: 웹이 Spotify 매칭 후 enrich 호출(속성 채움) + 그 속성을 추천에 활용(BPM/energy 상황 매칭).
+  - **진행(2026-06-23~25): 웹 v29가 매칭 후 enrich를 fire-and-forget 호출** → 실주행으로 243곡 축적.
+  - **장르 = Last.fm 태그로 전환(2026-06-30).** Spotify 아티스트 장르가 거의 전부 빈 값(243곡 중 1곡)으로 확인 → 폐기. enrich가 Last.fm track/artist.getTopTags(count≥10, junk필터, 상위6)로 `genres` 채움. enrich에 backfill 모드({backfill:N}) 추가해 기존 곡 일괄 채움.
+  - **현황: genres 84% / bpm 85% / energy 84%** (243곡). 못 채운 16%=Last.fm에도 없는 무명곡. 노이즈 태그(팬덤·국가명) 소량.
+  - LASTFM_API_KEY는 Supabase Secret 등록됨. enrich 함수 버전 v4(백필 포함).
+  - ★ 미완(다음 작업): (1) 웹의 장르필터·취향카테고리가 아직 (빈)Spotify 장르를 봄 → **track_facts의 Last.fm genres를 읽게 전환**(enrich를 루프에서 await, 반환 genres 사용, Spotify /artists fetchGenres 제거). (2) BPM/energy 상황 매칭.
 - 보조: `yt_pool`(무드쿼리→후보 제목), 짧은 TTL, 멀티유저 쿼터용. `context_cache`(맥락→무드어휘/시드, 상황+언어 키).
 - 캐싱 X(매번 신선): **최종 선곡** → 셔플+이미들은곡제외+취향재정렬로 매번 다르게(새로움 유지).
 - 비용이 유저 수가 아니라 "새 곡·새 상황 수"에만 비례.
@@ -64,8 +68,22 @@
   - Core Motion 활동감지 + GPS + 날씨 → 맥락
   - Spotify iOS SDK 백그라운드 재생
   - Phase 1 백엔드 재사용 + App Attest + 로케일 대응
+  - **로그 UX**: 현재 웹 하단 로그 패널은 개발용 → 앱에선 유저에게 안 보임. 대신 **중요 이벤트(에러·갱신 실패·기기 없음 등)만 사용자 알림(토스트/알림창)** 으로. 상세 로그는 내부(디버그/텔레메트리)로만. (웹은 지금 그대로 둠)
 - **Phase 4**: watchOS 앱 — 폰 없는 헬스·맨몸 러닝(워치 센서·심박, 셀룰러 워치, Spotify Web API 제어 제약).
 - (메모) 분리 순서 근거: 백엔드는 필수+얇아서 먼저 세우면 지능을 처음부터 안전하게 + 재배선 헛수고 없음. 반대안(지능 먼저)은 검증은 빠르나 BYOK 임시·재작업 발생.
+
+## DB 추천 파운데이션 (2026-07-01)
+곡당 이벤트 행은 폭증 → **집계 테이블**로 저장(유저·상황 기준). 아래 테이블 + track_facts가 향후 "DB에서도 신규곡 추천" 알고리즘의 재료.
+
+- **users** (마스터, PK=Spotify user id): display_name, product, country, locale, settings jsonb(향후 앱설정), created_at, last_seen_at. 로그인 시 log{type:'user'}로 upsert. 다른 테이블 user_id가 논리 참조(현재 소프트, FK 미설정).
+
+- **활동(activity) 차원 (2026-07-01)**: signature 맨 앞에 activity 포함(`driving|place|weather|tod|speed`). situation_track_stats·user_situation_prefs에 activity 컬럼 추가. **지금은 driving 고정**(웹 자동감지 불가), 러닝·사이클링·커뮤팅은 Phase2/3(디바이스 감지) 이후. 파운데이션만 준비 — 활동 추가 시 상황이 자동 분리됨.
+- **situation_track_stats** (전 유저 공통, 상황×곡): signature, track_id, dims(activity 포함), serve_count, pos_count(완청/좋아요), neg_count(스킵). "어떤 상황에 어떤 곡이 서빙/호평됐나" → DB추천 후보원 + 분석. PK(signature,track_id).
+- **user_situation_prefs** (유저×상황 집계): user_id, signature, pos/neg_count, bpm_sum/n·energy_sum/n·valence_sum/n(→평균, 긍정 신호만), genre_weights jsonb, artist_weights jsonb. **곡당 아님 → 크기 유한**(유저×상황 수). "이 상황에서 이 유저의 평균 BPM·선호 장르/아티스트". PK(user_id,signature).
+- **log Edge Function**(v2, verify_jwt): {type:'serve',user_id,situation,track_ids[]} → situation_track_stats serve_count 증가. {type:'feedback',user_id,situation,track_id,action,weight} → stats pos/neg + user_situation_prefs 집계(track_facts 속성으로 평균·가중치). read-modify-write(단일유저 스케일 ok; 멀티유저 규모면 원자적 RPC로 전환).
+- **웹 배선**(로컬 미배포): showProfile서 spUserId 캡처. logServe(final) 서빙 로그. logFeedback: 완청 full_play+1.0 / 👍 like+1.0 / 스킵 skip -pen. situationObj()=현재 상황.
+- **향후 알고리즘(파운데이션만 준비, 미구현)**: 상황 S에서 user_situation_prefs의 평균BPM·장르·아티스트로 후보 필터/정렬 + situation_track_stats에서 그 상황 호평곡(아직 안 들은 것=새로움) → YouTube뿐 아니라 **우리 DB에서도** 추천. 곡 속성 매칭(BPM/energy)까지.
+- 참고: 실사용 데이터는 웹 배포(v30) 후부터 쌓임. serves per-event/user_feedback per-event 테이블은 폐기(집계로 대체).
 
 ## 취향 시스템 v28 (2026-06-21, 로컬 v28-prefcat / 미푸시)
 - prefs = { blocked:{uri:name}, fav:{"아티스트 / 장르":score}, liked:{uri:{name,artist}} }.

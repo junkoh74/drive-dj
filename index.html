@@ -39,10 +39,6 @@
   .dot.on { background:var(--ok); }
   a { color:var(--acc); }
   .hint { font-size:12px; color:var(--mut); line-height:1.5; margin-top:8px; }
-  .gdrop { max-height:200px; overflow:auto; border:1px solid #2a3142; border-radius:10px; margin-top:6px; display:none; }
-  .gdrop.on { display:block; }
-  .gopt { padding:11px 12px; font-size:14px; border-bottom:1px solid #1c2230; cursor:pointer; }
-  .gopt:active { background:#222838; }
 </style>
 </head>
 <body>
@@ -84,20 +80,6 @@
     <div id="pills" style="margin-top:8px"></div>
   </div>
 
-  <!-- 장르 필터 -->
-  <div class="card">
-    <div class="k" style="font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px">장르 필터 (Spotify 장르에서 검색·선택)</div>
-    <label>포함 — 선택한 장르만 (비우면 전체)</label>
-    <input id="genreInc" placeholder="장르 검색…" autocomplete="off" />
-    <div id="genreIncList" class="gdrop"></div>
-    <div id="genreIncChips" style="margin-top:6px"></div>
-    <label style="margin-top:10px;display:block">제외 — 선택한 장르는 뺌</label>
-    <input id="genreExc" placeholder="장르 검색…" autocomplete="off" />
-    <div id="genreExcList" class="gdrop"></div>
-    <div id="genreExcChips" style="margin-top:6px"></div>
-    <button class="ghost" id="genreApply" style="margin-top:10px">필터 적용 (재추천)</button>
-  </div>
-
   <!-- 재생 컨트롤 -->
   <div class="card">
     <div style="display:flex;gap:12px;align-items:center;margin-bottom:12px">
@@ -109,11 +91,7 @@
       </div>
     </div>
     <div class="grid2">
-      <button class="ghost" id="badBtn" style="background:#3a2230">👎 싫어요</button>
       <button class="ghost" id="goodBtn" style="background:#1f3a2e">👍 좋아요</button>
-    </div>
-    <div class="grid2" style="margin-top:10px">
-      <button class="ghost" id="skipBtn">⏭ 다음 곡</button>
       <button class="ghost" id="refreshBtn">↻ 지금 상황 반영</button>
     </div>
     <div id="prefStat" style="font-size:12px;color:var(--mut);margin-top:8px"></div>
@@ -128,7 +106,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v29';
+const VERSION = 'v30';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -139,11 +117,12 @@ let curContext={ speedKmh:0, weather:null, tod:null, place:null, placeType:'city
 let candMeta={};          // uri -> {name, artist, aid, genres}
 let trackData={};         // uri -> Spotify 원본 필드(enrich 전송용)
 let pendingUris=null;     // 현재 곡 끝나면 반영할 다음 추천
-let queueUris=[];         // 지금 재생 중인 추천 목록 (스킵 시 다음 곡 계산용)
 let deviceId=null;
+let spUserId=null;        // Spotify user id (로깅용)
+let activity = 'driving';  // 지금은 드라이빙 고정. 러닝·사이클링·커뮤팅은 Phase2/3(디바이스 감지) 이후.
 let nowState={ playing:false, uri:null, dur:0, prog:0, name:'', artist:'' };
 let lastUri=null, lastArtist=null;
-let trackStartTs=0, skipFlag=false, forceFlag=false;  // 완청/스킵/강제교체 구분
+let trackStartTs=0, forceFlag=false;  // 강제교체(↻/상황변화) 시 완청/스킵 판정 스킵
 
 // ===== 취향 =====
 // prefs: blocked(제외 곡), fav("아티스트 / 장르" 결합 카테고리 점수), liked(좋아요 곡)
@@ -240,7 +219,8 @@ async function api(path, opts){
 }
 
 async function showProfile(){
-  try{ const me=await api('/me'); $('who').textContent='✓ '+(me.display_name||me.id)+' ('+(me.product||'?')+')';
+  try{ const me=await api('/me'); spUserId=me.id||null; $('who').textContent='✓ '+(me.display_name||me.id)+' ('+(me.product||'?')+')';
+    logBackend({ type:'user', user:{ id:me.id, display_name:me.display_name, product:me.product, country:me.country, locale:navigator.language } });  // 유저 마스터 기록
     if(me.product!=='premium') log('⚠️ Premium이 아니면 재생 제어가 막힐 수 있어요'); }
   catch(e){ $('who').textContent='✓ 연결됨'; }
 }
@@ -257,7 +237,7 @@ async function playUris(uris){
     {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({uris})});
 }
 // 새 추천 목록으로 재생 시작 (스킵 계산을 위해 목록 보관)
-function setQueueAndPlay(uris){ queueUris=uris.slice(); return playUris(uris); }
+function setQueueAndPlay(uris){ return playUris(uris); }
 
 // ===== 거리 (Haversine, m) =====
 function haversine(a,b){
@@ -321,7 +301,7 @@ function buildQueryKo(ctx){
 }
 // 시그니처도 우선순위 순서로 (변화 감지용)
 function signature(ctx){
-  return [ ctx.placeType, ctx.weather?ctx.weather.key:'?', ctx.tod?ctx.tod.key:'?', speedBucket(ctx.speedKmh).key ].join('|');
+  return [ activity, ctx.placeType, ctx.weather?ctx.weather.key:'?', ctx.tod?ctx.tod.key:'?', speedBucket(ctx.speedKmh).key ].join('|');
 }
 
 
@@ -369,6 +349,21 @@ async function enrichTracks(uris){
     else log('속성 캐싱 '+Object.keys(j.facts||{}).length+'곡 (신규분석 '+(j.enriched||0)+')');
   }catch(e){ log('enrich 실패: '+e.message); }
 }
+// 현재 상황 객체 (로깅용)
+function situationObj(){
+  return { activity, place_type:curContext.placeType, weather:curContext.weather?curContext.weather.key:null,
+           tod:curContext.tod?curContext.tod.key:null, speed_bucket:speedBucket(curContext.speedKmh).key,
+           signature:signature(curContext) };
+}
+const uriToId = u => String(u||'').split(':').pop();
+// 로깅 백엔드 호출 (serve/feedback)
+async function logBackend(payload){
+  try{ await fetch(SUPA_URL+'/functions/v1/log',{ method:'POST',
+    headers:{ 'Authorization':'Bearer '+SUPA_ANON, 'Content-Type':'application/json' },
+    body:JSON.stringify(payload) }); }catch(e){}
+}
+function logServe(uris){ if(!uris.length) return; logBackend({ type:'serve', user_id:spUserId, situation:situationObj(), track_ids:uris.map(uriToId) }); }
+function logFeedback(uri, action, weight){ if(!uri) return; logBackend({ type:'feedback', user_id:spUserId, situation:situationObj(), track_id:uriToId(uri), action, weight }); }
 // YouTube 영상 제목 → Spotify 검색용으로 정리
 function cleanTitle(t){
   return String(t)
@@ -385,44 +380,6 @@ function isGoodMatch(ytTitle, tr){
   const hit=need.filter(w=>hay.indexOf(w)>=0).length;
   return hit/need.length >= 0.5;   // 곡명+아티스트 토큰의 절반 이상 일치해야 인정
 }
-// 매칭된 곡들의 아티스트 장르 조회 (50명씩 배치)
-async function fetchGenres(uris){
-  const ids=Array.from(new Set(uris.map(u=>candMeta[u]&&candMeta[u].aid).filter(Boolean)));
-  const gmap={};
-  for(let i=0;i<ids.length;i+=50){
-    try{ const j=await api('/artists?ids='+ids.slice(i,i+50).join(',')); (j.artists||[]).forEach(a=>{ if(a) gmap[a.id]=a.genres||[]; }); }
-    catch(e){ log('장르조회 실패: '+(e.message||e)); }
-  }
-  return gmap;
-}
-// 장르 선택 상태 + 알려진 장르 목록(기본 + 곡에서 발견한 것 누적 → 실제 존재 장르만 선택)
-function loadArr(k){ try{ return JSON.parse(localStorage.getItem(k))||[]; }catch(e){ return []; } }
-let incSel = loadArr('genre_inc'), excSel = loadArr('genre_exc');
-const BASE_GENRES = ['k-pop','k-rap','korean r&b','korean pop','korean ost','k-indie','trot','pop','dance pop','electropop','synth-pop','city pop','indie pop','indie rock','rock','alternative rock','r&b','hip hop','rap','trap','edm','house','deep house','lo-fi','jazz','soul','funk','classical','acoustic','ballad','singer-songwriter','folk','metal','punk','reggae','latin','j-pop','j-rock','anime','soundtrack','chill','ambient','bedroom pop','disco','blues','country'];
-let knownGenres = (()=>{ const s=new Set(BASE_GENRES); loadArr('seenGenres').forEach(g=>s.add(g)); incSel.concat(excSel).forEach(g=>s.add(g)); return s; })();
-function getGenreList(which){ return which==='inc'?incSel:excSel; }
-// 입력값 부분일치로 장르 후보 목록 표시 (직접 만든 검색 드롭다운)
-function filterGenres(which, q){
-  const listEl=$(which==='inc'?'genreIncList':'genreExcList');
-  q=(q||'').trim().toLowerCase();
-  const sel = which==='inc'?incSel:excSel;
-  let list = Array.from(knownGenres).filter(g=> sel.indexOf(g)<0);
-  if(q) list = list.filter(g=> g.indexOf(q)>=0);
-  list = list.sort().slice(0,50);
-  if(!list.length){ listEl.classList.remove('on'); listEl.innerHTML=''; return; }
-  listEl.innerHTML = list.map(g=>`<div class="gopt" data-gadd="${which}:::${esc(g)}">${esc(g)}</div>`).join('');
-  listEl.classList.add('on');
-}
-function renderGenreChips(){
-  const mk=(arr,which)=> arr.map((g,i)=>`<span class="pill" style="cursor:pointer" data-gdel="${which}:${i}">${esc(g)} ✕</span>`).join('') || '<span style="font-size:11px;color:var(--mut)">없음</span>';
-  $('genreIncChips').innerHTML=mk(incSel,'inc'); $('genreExcChips').innerHTML=mk(excSel,'exc');
-}
-function addGenre(which, val){
-  const g=(val||'').trim().toLowerCase(); if(!g) return;
-  const arr = which==='inc'?incSel:excSel;
-  if(arr.indexOf(g)<0){ arr.push(g); knownGenres.add(g); localStorage.setItem('genre_'+which, JSON.stringify(arr)); renderGenreChips(); }
-}
-function removeGenre(which, i){ const arr = which==='inc'?incSel:excSel; arr.splice(i,1); localStorage.setItem('genre_'+which, JSON.stringify(arr)); renderGenreChips(); }
 // 동시 실행 제한 (Spotify 검색 폭주 방지)
 async function mapLimit(arr, limit, fn){
   let i=0;
@@ -468,29 +425,12 @@ async function searchAndPlay(force){
     candMeta=meta;
     if(!uris.length){ log('Spotify 정확매칭 0곡 (유사곡 추가 안 함)'); return; }
 
-    // 3) 아티스트 장르 확인 → 포함/제외 필터
-    const gmap=await fetchGenres(uris);
-    const inc=getGenreList('inc'), exc=getGenreList('exc');
-    const seen={}; let excluded=0, noGenre=0;
-    const kept=uris.filter(u=>{
-      const gs=(gmap[meta[u].aid]||[]).map(g=>g.toLowerCase());
-      meta[u].genres=gs;   // 점수계산(결합 카테고리)용으로 저장
-      gs.forEach(g=>seen[g]=(seen[g]||0)+1);
-      if(!gs.length){ noGenre++; return inc.length? false : true; }  // 장르정보 없음: 포함필터 있으면 제외
-      if(exc.length && gs.some(g=>exc.some(x=>g.indexOf(x)>=0))){ excluded++; return false; }
-      if(inc.length && !gs.some(g=>inc.some(x=>g.indexOf(x)>=0))) return false;
-      return true;
-    });
-    // 발견된 장르를 드롭다운 목록에 누적 (실제 존재하는 장르만 선택 가능 → 오매칭 방지)
-    let gAdded=false; Object.keys(seen).forEach(g=>{ if(!knownGenres.has(g)){ knownGenres.add(g); gAdded=true; } });
-    if(gAdded){ localStorage.setItem('seenGenres', JSON.stringify(Array.from(knownGenres))); }
-
-    // 선호 점수(아티스트/장르 결합) 높은 순 + 약간의 랜덤(다양성)
-    const final=kept.sort((a,b)=> (scoreTrack(b)+Math.random()) - (scoreTrack(a)+Math.random())).slice(0,N);
-    log(`매칭 ${uris.length} → 장르필터 후 ${final.length}곡`+((inc.length||exc.length)?` (제외 ${excluded}, 장르없음 ${noGenre})`:''));
-    if(!final.length){ log('필터 통과 곡 없음 — 포함 장르를 비우거나 완화하세요'); return; }
+    // 선호 점수(아티스트) 높은 순 + 약간의 랜덤(다양성)
+    const final=uris.sort((a,b)=> (scoreTrack(b)+Math.random()) - (scoreTrack(a)+Math.random())).slice(0,N);
+    log(`정확매칭 ${uris.length}곡 → 재생 ${final.length}`);
     applyOrQueue(final, force);
-    enrichTracks(final);   // 속성 채워 track_facts에 캐싱 (백그라운드)
+    enrichTracks(final);   // 속성(BPM·energy·Last.fm장르) 채워 track_facts에 캐싱 (백그라운드)
+    logServe(final);       // 상황→서빙된 곡 로그 (serves)
   }catch(e){
     if(e.status===401) log('인증 만료 — 다시 로그인하세요');
     else if(e.status===403) log('⚠️ 권한/Premium 문제: '+e.message);
@@ -520,9 +460,20 @@ async function pollPlayback(){
       $('npTitle').textContent='– Spotify 재생 대기 –'; $('npArtist').textContent='';
       $('npState').textContent='폰 Spotify에서 곡을 한 번 재생하세요'; return; }
     const tr=j.item, artist=(tr.artists&&tr.artists.map(a=>a.name).join(', '))||'';
-    if(tr.uri!==lastUri){           // 곡 전환
-      if(lastUri && !skipFlag && !forceFlag){ bumpFav(lastUri, 1.0); savePrefs(); log('완청 +1.0'); }  // 자연 종료 = 완청
-      skipFlag=false; forceFlag=false;
+    if(tr.uri!==lastUri){           // 곡 전환 — 직전 곡을 진행도로 완청/스킵 판정
+      if(lastUri && !forceFlag){
+        const dur=nowState.dur, prog=nowState.prog;   // nowState=직전 곡의 마지막 상태
+        if(dur>0 && prog>=dur-12000){                 // 끝 12초 이내 = 완청
+          bumpFav(lastUri,1.0); logFeedback(lastUri,'full_play',1.0); log('완청 +1.0');
+        } else {                                       // 일찍 넘김 = 스킵(비선호), 들은 시간별 감점
+          const listen=prog/1000;
+          const pen = listen<10 ? 1.0 : (listen<60 ? 0.5 : 0.3);
+          if(listen<10) prefs.blocked[lastUri]=(candMeta[lastUri]&&candMeta[lastUri].name)||lastUri;  // 아주 빨리 넘김=제외
+          penalizeFav(lastUri, pen); logFeedback(lastUri,'skip',-pen); log('스킵 '+Math.round(listen)+'초 (-'+pen+')');
+        }
+        savePrefs();
+      }
+      forceFlag=false;
       lastUri=tr.uri; lastArtist=(tr.artists&&tr.artists[0]&&tr.artists[0].name)||''; trackStartTs=Date.now();
     }
     nowState={ playing:j.is_playing, uri:tr.uri, dur:tr.duration_ms||0, prog:j.progress_ms||0, name:tr.name||'', artist };
@@ -539,16 +490,13 @@ async function pollPlayback(){
 }
 setInterval(pollPlayback, 3000);
 
-// ===== 평가 =====
-function rate(good){
+// ===== 좋아요 =====
+function likeCurrent(){
   const uri=nowState.uri; if(!uri) return;
-  if(good){
-    bumpFav(uri, 1.0);   // 아티스트+장르 결합 카테고리 +1.0
-    prefs.liked[uri]={ name:nowState.name||(candMeta[uri]&&candMeta[uri].name)||uri, artist:nowState.artist||'' };
-    log('👍 좋아요 '+(nowState.name||'')); savePrefs();
-  } else {
-    skipNext();   // 👎 = 스킵과 동일 (제외 + 감점 + 다음곡)
-  }
+  bumpFav(uri, 1.0);   // 아티스트+장르 결합 카테고리 +1.0
+  prefs.liked[uri]={ name:nowState.name||(candMeta[uri]&&candMeta[uri].name)||uri, artist:nowState.artist||'' };
+  logFeedback(uri,'like',1.0);
+  log('👍 좋아요 '+(nowState.name||'')); savePrefs();
 }
 
 // ===== 컨텍스트 갱신 + 트리거 =====
@@ -608,48 +556,8 @@ $('startBtn').addEventListener('click', async ()=>{
   navigator.geolocation.watchPosition(onPos, onPosErr, { enableHighAccuracy:true, maximumAge:2000, timeout:15000 });
   log('위치 추적 시작'); updateContext(true);
 });
-$('goodBtn').addEventListener('click', ()=>rate(true));
-$('badBtn').addEventListener('click', ()=>rate(false));
-// 우리 목록 기준으로 다음 곡부터 다시 재생 (Spotify 원격 next가 안 먹히는 환경 대비)
-async function skipNext(){
-  const uri=nowState.uri;
-  if(uri){
-    const listen = trackStartTs ? (Date.now()-trackStartTs)/1000 : 999;
-    const pen = listen<10 ? 1.0 : (listen<60 ? 0.5 : 0.3);   // 청취시간별 감점
-    prefs.blocked[uri] = nowState.name || (candMeta[uri]&&candMeta[uri].name) || uri;  // 제외
-    penalizeFav(uri, pen);   // 이미 점수 있는 결합 카테고리만 감점
-    skipFlag=true; savePrefs();
-    log('⏭ 다음곡=싫어요 '+Math.round(listen)+'초 (-'+pen+')');
-  }
-  try{
-    if(queueUris.length){
-      const pos=uri?queueUris.indexOf(uri):-1;
-      let next=pos+1; if(next>=queueUris.length) next=0;
-      await playUris(queueUris.slice(next));
-    } else {
-      await api('/me/player/next'+(deviceId?('?device_id='+deviceId):''),{method:'POST'});
-    }
-    setTimeout(pollPlayback, 700);
-  }catch(e){ log('스킵 실패: '+e.message); }
-}
-$('skipBtn').addEventListener('click', skipNext);
+$('goodBtn').addEventListener('click', likeCurrent);
 $('refreshBtn').addEventListener('click', ()=>updateContext(true));
-function bindGenreInput(id, which){
-  const el=$(id), listId=which==='inc'?'genreIncList':'genreExcList';
-  el.addEventListener('input', ()=> filterGenres(which, el.value));
-  el.addEventListener('focus', ()=> filterGenres(which, el.value));
-  el.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); addGenre(which, el.value); el.value=''; $(listId).classList.remove('on'); } });
-}
-bindGenreInput('genreInc','inc'); bindGenreInput('genreExc','exc');
-document.addEventListener('click', e=>{
-  const opt=e.target.closest('[data-gadd]');
-  if(opt){ const v=opt.getAttribute('data-gadd'); const i=v.indexOf(':::'); const which=v.slice(0,i), g=v.slice(i+3);
-    addGenre(which, g); $(which==='inc'?'genreInc':'genreExc').value=''; $(which==='inc'?'genreIncList':'genreExcList').classList.remove('on'); return; }
-  const c=e.target.closest('[data-gdel]');
-  if(c){ e.preventDefault(); const p=c.getAttribute('data-gdel').split(':'); removeGenre(p[0], +p[1]); return; }
-  if(!e.target.closest('#genreInc,#genreExc,.gdrop')){ $('genreIncList').classList.remove('on'); $('genreExcList').classList.remove('on'); }
-});
-$('genreApply').addEventListener('click', ()=>{ log('장르 필터 적용 → 재추천'); updateContext(true); });
 $('prefToggle').addEventListener('click', ()=>{
   const p=$('prefPanel'); const open=p.style.display==='none';
   p.style.display=open?'block':'none'; $('prefToggle').textContent=open?'취향 목록 닫기':'취향 목록 보기';
@@ -672,7 +580,6 @@ $('prefPanel').addEventListener('click', async e=>{
 (async function init(){
   $('ver').textContent=VERSION; $('redir').textContent=REDIRECT; renderPref();
   const saved=localStorage.getItem('sp_cid'); if(saved) $('clientId').value=saved;
-  renderGenreChips();
   const params=new URLSearchParams(location.search);
   if(params.get('code')){
     await exchangeCode(params.get('code'));
