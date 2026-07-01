@@ -46,11 +46,8 @@
 
   <!-- 1) Spotify 연결 -->
   <div class="card" id="authCard">
-    <label>Spotify Client ID (이 기기에만 저장)</label>
-    <input id="clientId" placeholder="developer.spotify.com 앱의 Client ID" autocomplete="off" />
-    <div style="height:8px"></div>
-    <button id="loginBtn">Spotify 로그인</button>
-    <div class="hint">Premium 필요 · 폰 Spotify 앱이 켜져 있어야 해요. 리다이렉트 URI에 <b id="redir"></b> 를 등록하세요.</div>
+    <button id="loginBtn">Spotify로 로그인</button>
+    <div class="hint">Spotify <b>Premium</b> 계정 필요 · 로그인 후 폰 <b>Spotify 앱을 열어 아무 곡이나 한 번 재생</b>하세요(활성 기기).</div>
   </div>
 
   <!-- 2) 연결됨 + 주행 시작 -->
@@ -106,7 +103,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v30';
+const VERSION = 'v31';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -166,6 +163,7 @@ function renderPrefPanel(){
 // =====================================================================
 //  Spotify OAuth (PKCE) + Web API 원격 제어
 // =====================================================================
+const CLIENT_ID = 'fda389e51ed745558a8453499a816de0';   // dj-bot 앱 (공개 안전). 친구는 로그인만.
 const REDIRECT = location.origin + location.pathname;
 const SCOPES = 'user-read-private user-read-playback-state user-modify-playback-state user-read-currently-playing';
 let tokens = (()=>{ try{ return JSON.parse(localStorage.getItem('sp_tok'))||{}; }catch(e){ return {}; } })();
@@ -176,17 +174,15 @@ async function sha256b64(s){
   return btoa(String.fromCharCode.apply(null, new Uint8Array(d))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 }
 async function login(){
-  const cid=$('clientId').value.trim(); if(!cid){ alert('Client ID를 입력하세요'); return; }
-  localStorage.setItem('sp_cid', cid);
   const verifier=rand(48); localStorage.setItem('sp_verifier', verifier);
   const challenge=await sha256b64(verifier);
-  const p=new URLSearchParams({ client_id:cid, response_type:'code', redirect_uri:REDIRECT,
+  const p=new URLSearchParams({ client_id:CLIENT_ID, response_type:'code', redirect_uri:REDIRECT,
     scope:SCOPES, code_challenge_method:'S256', code_challenge:challenge });
   location.href='https://accounts.spotify.com/authorize?'+p.toString();
 }
 async function exchangeCode(code){
-  const cid=localStorage.getItem('sp_cid'), verifier=localStorage.getItem('sp_verifier');
-  const body=new URLSearchParams({ grant_type:'authorization_code', code, redirect_uri:REDIRECT, client_id:cid, code_verifier:verifier });
+  const verifier=localStorage.getItem('sp_verifier');
+  const body=new URLSearchParams({ grant_type:'authorization_code', code, redirect_uri:REDIRECT, client_id:CLIENT_ID, code_verifier:verifier });
   const j=await (await fetch('https://accounts.spotify.com/api/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body})).json();
   if(j.access_token){ storeTokens(j); } else { log('토큰 교환 실패: '+(j.error_description||j.error||'?')); }
 }
@@ -197,8 +193,7 @@ function storeTokens(j){
   localStorage.setItem('sp_tok', JSON.stringify(tokens));
 }
 async function refreshToken(){
-  const cid=localStorage.getItem('sp_cid');
-  const body=new URLSearchParams({ grant_type:'refresh_token', refresh_token:tokens.refresh, client_id:cid });
+  const body=new URLSearchParams({ grant_type:'refresh_token', refresh_token:tokens.refresh, client_id:CLIENT_ID });
   const j=await (await fetch('https://accounts.spotify.com/api/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body})).json();
   if(j.access_token) storeTokens(j); else log('토큰 갱신 실패 — 다시 로그인 필요');
 }
@@ -578,8 +573,7 @@ $('prefPanel').addEventListener('click', async e=>{
 
 // ===== 초기화 =====
 (async function init(){
-  $('ver').textContent=VERSION; $('redir').textContent=REDIRECT; renderPref();
-  const saved=localStorage.getItem('sp_cid'); if(saved) $('clientId').value=saved;
+  $('ver').textContent=VERSION; renderPref();
   const params=new URLSearchParams(location.search);
   if(params.get('code')){
     await exchangeCode(params.get('code'));
