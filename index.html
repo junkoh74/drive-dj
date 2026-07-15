@@ -103,7 +103,7 @@
 
 <script>
 // ===== 유틸 =====
-const VERSION = 'v31';
+const VERSION = 'v32';
 const $ = id => document.getElementById(id);
 const log = m => { const el=$('log'); const t=new Date().toTimeString().slice(0,8);
   el.textContent = `[${t}] ${m}\n` + el.textContent; };
@@ -252,22 +252,22 @@ function speedBucket(kmh){
   if(kmh<=60) return {key:'cruise',  ko:'주행',     en:'groovy mid-tempo',     koMood:'기분좋은'};
   if(kmh<=90) return {key:'fast',    ko:'빠른주행', en:'upbeat',               koMood:'감성'};
   return         {key:'highway', ko:'고속도로', en:'high energy driving',  koMood:'신나는'}; }
-// ===== WMO 날씨코드 → 무드 =====
-function weatherFromCode(code, isDay){
-  if(code===0) return {key:'clear', ko:isDay?'맑음':'맑은 밤', en:'bright'};
-  if(code<=3) return {key:'cloudy', ko:'구름', en:'mellow'};
-  if(code===45||code===48) return {key:'fog', ko:'안개', en:'dreamy'};
-  if(code>=51&&code<=67) return {key:'rain', ko:'비', en:'rainy'};
-  if(code>=71&&code<=77) return {key:'snow', ko:'눈', en:'snowy'};
-  if(code>=80&&code<=82) return {key:'rain', ko:'소나기', en:'rainy'};
-  if(code>=85&&code<=86) return {key:'snow', ko:'눈', en:'snowy'};
-  if(code>=95) return {key:'storm', ko:'뇌우', en:'stormy'};
-  return {key:'clear', ko:'–', en:''}; }
-// ===== 날씨 (Open-Meteo, 키 불필요) =====
+// ===== 날씨 버킷 → 표시/검색 라벨 =====
+const WEATHER_LABELS={ clear:{ko:'맑음', en:'bright'}, cloudy:{ko:'구름', en:'mellow'}, fog:{ko:'안개', en:'dreamy'},
+                       rain:{ko:'비', en:'rainy'}, snow:{ko:'눈', en:'snowy'}, storm:{ko:'뇌우', en:'stormy'} };
+// ===== 날씨 (백엔드 weather 함수 — 국가 라우팅: KR=기상청, 그 외/실패=Open-Meteo) =====
 async function fetchWeather(lat,lon){
-  try{ const u=`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code,is_day`;
-    const j=await (await fetch(u)).json(); const c=j.current;
-    const w=weatherFromCode(c.weather_code, c.is_day===1); w.temp=Math.round(c.temperature_2m); return w;
+  try{
+    const country=(curContext.place&&curContext.place.country)||localStorage.getItem('locCountry')||'';
+    const r=await fetch(SUPA_URL+'/functions/v1/weather',{ method:'POST',
+      headers:{ 'Authorization':'Bearer '+SUPA_ANON, 'Content-Type':'application/json' },
+      body:JSON.stringify({ lat, lon, country }) });
+    const j=await r.json();
+    if(j.error){ log('날씨 오류: '+j.error); return null; }
+    const lb=WEATHER_LABELS[j.key]||WEATHER_LABELS.clear;
+    if(j.kma_error) log('기상청 폴백(OM 사용): '+String(j.kma_error).slice(0,40));
+    return { key:j.key, ko:(j.key==='clear'&&!j.isDay)?'맑은 밤':lb.ko, en:lb.en,
+             temp:(j.temp!=null)?Math.round(j.temp):null, source:j.source };
   }catch(e){ log('날씨 실패: '+e.message); return null; } }
 // ===== 역지오코딩 (Nominatim) =====
 async function fetchPlace(lat,lon){
@@ -279,8 +279,14 @@ async function fetchPlace(lat,lon){
     else if(/peak|mountain|forest|wood|natural/i.test(cat)) type='mountain';
     else if(/motorway|trunk/i.test(a.road||'')) type='highway';
     else if(a.village||a.hamlet||a.farm) type='rural';
-    return {name, type};
+    return {name, type, country:(a.country_code||'').toLowerCase()};
   }catch(e){ log('장소 실패: '+e.message); return null; } }
+// 위치 국가가 바뀌면 백엔드에 보고 (새 국가면 운영자에게 텔레그램 알림; Spotify country=로케일과 별개)
+function reportLocCountry(cc){
+  if(!cc || localStorage.getItem('locCountry')===cc) return;
+  localStorage.setItem('locCountry', cc);
+  logBackend({ type:'user_location', user_id:spUserId, country:cc });
+}
 const placeWord = { coast:'해안도로', mountain:'산길', highway:'고속도로', rural:'시골길', city:'도심' };  // 화면 표시용(한국어)
 
 // ===== 무드 → 검색 쿼리 (우선순위: 위치 > 날씨 > 시간 > 속도) =====
@@ -310,9 +316,9 @@ async function ytTitlesBackend(queries){
       headers:{ 'Authorization':'Bearer '+SUPA_ANON, 'Content-Type':'application/json' },
       body:JSON.stringify({ queries }) });
     const j=await r.json();
-    if(j.error){ log('YouTube 백엔드 오류: '+j.error); return {}; }
-    return j.results||{};
-  }catch(e){ log('YouTube 백엔드 실패: '+e.message); return {}; }
+    if(j.error){ log('YouTube 백엔드 오류: '+j.error); return {results:{}, split:{}}; }
+    return { results:j.results||{}, split:j.split||{} };   // split=출처별(playlist/session), 구백엔드면 빈 객체
+  }catch(e){ log('YouTube 백엔드 실패: '+e.message); return {results:{}, split:{}}; }
 }
 // Spotify 트랙 객체 → track_facts/enrich용 필드
 function spotifyFields(tr){
@@ -375,6 +381,18 @@ function isGoodMatch(ytTitle, tr){
   const hit=need.filter(w=>hay.indexOf(w)>=0).length;
   return hit/need.length >= 0.5;   // 곡명+아티스트 토큰의 절반 이상 일치해야 인정
 }
+// ===== 빈도 가중 선별 =====
+// 같은 곡이 여러 소스에 반복 등장한 횟수 = 그 무드의 대표곡이라는 단서.
+// 단 완전 빈도순 정렬은 같은 상황마다 같은 곡만 나와 새로움이 죽으므로, 점수=빈도+랜덤 가중 샘플링.
+let candFreq={};   // cleanTitle 소문자 키 → 이번 수집분 등장횟수
+function pickByFreq(titles, n){
+  const g={};
+  titles.forEach(t=>{ const k=cleanTitle(t).toLowerCase(); if(!k) return;
+    if(!g[k]) g[k]={t, c:0}; g[k].c++; });
+  Object.keys(g).forEach(k=>{ candFreq[k]=(candFreq[k]||0)+g[k].c; });
+  return Object.values(g).map(e=>({t:e.t, s:e.c+Math.random()}))
+    .sort((a,b)=>b.s-a.s).slice(0,n).map(e=>e.t);
+}
 // 동시 실행 제한 (Spotify 검색 폭주 방지)
 async function mapLimit(arr, limit, fn){
   let i=0;
@@ -393,12 +411,20 @@ async function searchAndPlay(force){
     if(!dev){ log('⚠️ 활성 기기 없음 — 폰 Spotify에서 곡 재생 후 "↻"'); return; }
 
     const N=40, koN=20, foN=20;   // 한/영 절반씩 수집해 섞음
-    // 1) YouTube에서 무드 플레이리스트 채굴 → 곡 제목 수집 (백엔드가 키 들고 처리)
+    // 1) YouTube에서 무드 플레이리스트+DJ세션 채굴 → 곡 제목 수집 (백엔드가 키 들고 처리)
     const koQ=buildQueryKo(curContext)+' 노래', foQ=buildQueryEn(curContext)+' songs';
-    const res=await ytTitlesBackend([koQ, foQ]);
-    const koT=res[koQ]||[], foT=res[foQ]||[];
-    log(`YouTube 수집 — 한국 ${koT.length}/해외 ${foT.length} 제목`);
-    const cand = shuffle(koT).slice(0, koN*2).concat(shuffle(foT).slice(0, foN*2));  // 매칭 실패 대비 2배수
+    const {results:res, split}=await ytTitlesBackend([koQ, foQ]);
+    candFreq={};
+    // 소스별 슬롯: 세션 곡은 스타일이 달라 빈도로 겨루면 플레이리스트에 항상 밀림 → 30% 자리 보장(있을 때만)
+    const pickQ=(q, want)=>{
+      const sp=split[q]||{}; let pl=sp.playlist||[], ses=sp.session||[];
+      if(!pl.length && !ses.length) pl=res[q]||[];   // 구백엔드(합본만) 폴백
+      const sesN=Math.min(ses.length, Math.round(want*0.3));
+      return pickByFreq(ses, sesN).concat(pickByFreq(pl, want-sesN));
+    };
+    const st=q=>{const s=split[q]||{}; return `${(s.playlist||res[q]||[]).length}+세션${(s.session||[]).length}`;};
+    log(`YouTube 수집 — 한국 ${st(koQ)} / 해외 ${st(foQ)} 제목`);
+    const cand = pickQ(koQ, koN*2).concat(pickQ(foQ, foN*2));  // 매칭 실패 대비 2배수
     if(!cand.length){ log('YouTube 곡 없음 (키/쿼터 확인)'); return; }
 
     // 2) Spotify에서 같은 곡 검색 → URI 확보
@@ -410,7 +436,7 @@ async function searchAndPlay(force){
         // 정확히 일치하는 곡만 채택 — 없으면 유사곡 대신 건너뜀
         const tr=items.find(x=> x&&x.uri && isGoodMatch(t, x));
         if(tr && !prefs.blocked[tr.uri] && !meta[tr.uri]){
-          meta[tr.uri]={name:tr.name, artist:(tr.artists&&tr.artists[0]&&tr.artists[0].name)||'', aid:(tr.artists&&tr.artists[0]&&tr.artists[0].id)||''};
+          meta[tr.uri]={name:tr.name, artist:(tr.artists&&tr.artists[0]&&tr.artists[0].name)||'', aid:(tr.artists&&tr.artists[0]&&tr.artists[0].id)||'', freq:candFreq[q.toLowerCase()]||1};
           trackData[tr.uri]=spotifyFields(tr);
           uris.push(tr.uri);
         }
@@ -420,8 +446,9 @@ async function searchAndPlay(force){
     candMeta=meta;
     if(!uris.length){ log('Spotify 정확매칭 0곡 (유사곡 추가 안 함)'); return; }
 
-    // 선호 점수(아티스트) 높은 순 + 약간의 랜덤(다양성)
-    const final=uris.sort((a,b)=> (scoreTrack(b)+Math.random()) - (scoreTrack(a)+Math.random())).slice(0,N);
+    // 선호 점수(아티스트/장르) + 빈도 보너스(여러 소스 중복 등장, 최대 +1.2) + 약간의 랜덤(다양성)
+    const freqW=u=> Math.min(((candMeta[u]&&candMeta[u].freq)||1)-1, 3)*0.4;
+    const final=uris.sort((a,b)=> (scoreTrack(b)+freqW(b)+Math.random()) - (scoreTrack(a)+freqW(a)+Math.random())).slice(0,N);
     log(`정확매칭 ${uris.length}곡 → 재생 ${final.length}`);
     applyOrQueue(final, force);
     enrichTracks(final);   // 속성(BPM·energy·Last.fm장르) 채워 track_facts에 캐싱 (백그라운드)
@@ -530,7 +557,7 @@ function onPos(p){
   if(now-geocodeTs>90000 || !curContext.weather){
     geocodeTs=now;
     fetchWeather(lat,lon).then(w=>{ if(w){curContext.weather=w; updateContext(false);} });
-    fetchPlace(lat,lon).then(pl=>{ if(pl){curContext.place=pl; curContext.placeType=pl.type; updateContext(false);} });
+    fetchPlace(lat,lon).then(pl=>{ if(pl){curContext.place=pl; curContext.placeType=pl.type; reportLocCountry(pl.country); updateContext(false);} });
   }
   updateContext(false);
 }

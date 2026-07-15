@@ -1,6 +1,6 @@
 ---
 title: Drive DJ 버전 노트
-date: 2026-07-01
+date: 2026-07-15
 type: changelog
 tags: [drive-dj]
 ---
@@ -8,6 +8,11 @@ tags: [drive-dj]
 # Drive DJ 버전 노트
 
 > 버전은 **배포(GitHub Pages) 기준**으로 1씩 증가한다. 로컬 수정만으로는 버전을 올리지 않으며, 실제 배포할 때만 버전업 + 이 파일에 기록한다. 배포 규칙·현황은 [[HANDOFF]] 참조.
+
+## v32 — 2026-07-15
+- **날씨 국가 라우팅 연결**: fetchWeather가 백엔드 `weather` 함수 호출(KR=기상청 실황, 그 외/실패=Open-Meteo 폴백) + 위치 국가 변경 시 백엔드 보고(reportLocCountry, 새 국가 텔레그램 알림).
+- **DJ세션 채굴 반영**: 백엔드 yt-search v15가 무드 플레이리스트에 더해 DJ set/롱폼 영상 설명란 트랙리스트를 채굴(영어="+ dj set" 검색, 한국어=무드 그대로). 웹은 출처 분리 응답(split) 사용.
+- **곡 선별 개편**: 무작위 샘플링 → ① cleanTitle 정규화 키로 등장 빈도 집계 ② 빈도+랜덤 가중 샘플링 ③ DJ세션 곡 30% 슬롯 보장(있을 때만) ④ 최종 정렬에 빈도 보너스(최대 +1.2). 상세는 [[context-notes]] 2026-07-15.
 
 ## v31 — 2026-07-01
 - **친구 배포용**: Client ID를 코드에 내장(dj-bot), Client ID 입력창 제거 → 유저는 "Spotify로 로그인"만. 안내문구 친구용(Premium + 활성 기기).
