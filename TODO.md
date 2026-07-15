@@ -7,7 +7,7 @@ tags: [drive-dj]
 
 # Drive DJ — To-Do (이후 업무)
 
-> 현재 위치: 웹 프로토타입 **v31** 배포됨(로컬 미배포분 있음, 다음 배포 v32). Phase 1(키보호 백엔드) 완료, Phase 2(추천 지능) 진행 중.
+> 현재 위치: 웹 프로토타입 **v32** 배포됨(2026-07-15, 다음 배포 v33). Phase 1(키보호 백엔드) 완료, Phase 2(추천 지능) 진행 중.
 > 상세 맥락은 [[context-notes]] 참고. 배포는 "업데이트 해줘" 시 (버전=배포횟수, [[CHANGELOG]] 기록).
 
 ## ✅ 지금까지 완료
@@ -31,7 +31,7 @@ tags: [drive-dj]
 - [ ] 실주행으로 3개 DB 테이블 실데이터 축적 → 알고리즘 검증
 
 ## 🌐 국제화 / 날씨
-- [x] **날씨 국가 라우팅** (2026-07-06 완료): weather Edge Function — KR=기상청(KMA_WEATHER_KEY, 격자변환+PTY/SKY), 그 외/실패=OM 폴백. 웹 연결됨(배포 대기)
+- [x] **날씨 국가 라우팅** (2026-07-06 완료): weather Edge Function — KR=기상청(KMA_WEATHER_KEY, 격자변환+PTY/SKY), 그 외/실패=OM 폴백. 웹 연결·v32 배포됨(2026-07-15)
 - [x] 새 국가 유저 텔레그램 알림 (countries_seen + log user_location, 2026-07-06 검증)
 - [ ] 타국 유저 등장 시 그 나라 기상청 어댑터 추가 (JMA 엔드포인트 파악됨)
 - [ ] 기기 로케일 감지 → 그 언어로 검색/시드, Spotify market=유저 국가, Nominatim accept-language
