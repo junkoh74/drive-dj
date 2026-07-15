@@ -1,6 +1,13 @@
+---
+title: Drive DJ 버전 노트
+date: 2026-07-01
+type: changelog
+tags: [drive-dj]
+---
+
 # Drive DJ 버전 노트
 
-> 버전은 **배포(GitHub Pages) 기준**으로 1씩 증가한다. 로컬 수정만으로는 버전을 올리지 않으며, 실제 배포할 때만 버전업 + 이 파일에 기록한다.
+> 버전은 **배포(GitHub Pages) 기준**으로 1씩 증가한다. 로컬 수정만으로는 버전을 올리지 않으며, 실제 배포할 때만 버전업 + 이 파일에 기록한다. 배포 규칙·현황은 [[HANDOFF]] 참조.
 
 ## v31 — 2026-07-01
 - **친구 배포용**: Client ID를 코드에 내장(dj-bot), Client ID 입력창 제거 → 유저는 "Spotify로 로그인"만. 안내문구 친구용(Premium + 활성 기기).

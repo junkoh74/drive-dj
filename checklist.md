@@ -1,4 +1,13 @@
+---
+title: Drive DJ 체크리스트 (초기 MVP)
+date: 2026-06-16
+type: todo
+tags: [drive-dj]
+---
+
 # Drive DJ 체크리스트
+
+> 2026-06-16 첫날 MVP 당시 기록(역사 자료 — YouTube IFrame 등 폐기 경로 포함). 이후 진행은 [[TODO]] 참조.
 
 ## MVP (오늘 주행 테스트)
 - [x] 단일 index.html 작성

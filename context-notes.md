@@ -1,4 +1,13 @@
+---
+title: Drive DJ 컨텍스트 노트
+date: 2026-07-15
+type: notes
+tags: [drive-dj]
+---
+
 # Drive DJ 컨텍스트 노트
+
+> 결정과 이유의 시간순 기록. 최신 항목이 로드맵 섹션 바로 아래에 옴. 할 일은 [[TODO]], 배포 이력은 [[CHANGELOG]], 종합 현황은 [[HANDOFF]].
 
 ## 제품 로드맵 (2026-06-23 브레인스토밍 정리)
 
@@ -71,6 +80,52 @@
   - **로그 UX**: 현재 웹 하단 로그 패널은 개발용 → 앱에선 유저에게 안 보임. 대신 **중요 이벤트(에러·갱신 실패·기기 없음 등)만 사용자 알림(토스트/알림창)** 으로. 상세 로그는 내부(디버그/텔레메트리)로만. (웹은 지금 그대로 둠)
 - **Phase 4**: watchOS 앱 — 폰 없는 헬스·맨몸 러닝(워치 센서·심박, 셀룰러 워치, Spotify Web API 제어 제약).
 - (메모) 분리 순서 근거: 백엔드는 필수+얇아서 먼저 세우면 지능을 처음부터 안전하게 + 재배선 헛수고 없음. 반대안(지능 먼저)은 검증은 빠르나 BYOK 임시·재작업 발생.
+
+## DJ세션/라이브세션 채굴 — 효과성 검토 (2026-07-15, 구현 전 게이트)
+- **방법**: YouTube Data API 실측 샘플링(검색 8쿼리×10영상=80개 + 예시영상 + 댓글 API 10개). 스크립트/원데이터는 세션 스크래치(휘발), 수치는 여기 기록.
+- **결과 요약**
+  - 무드 쿼리 그대로 type=video 검색: 롱폼(15분+) 98%, 그중 **설명란 트랙리스트(5곡+ 파싱) 18%** (7/39).
+  - 영어 세션 쿼리("... dj set/mix/live session"): **34%** (13/38). 쿼리별 3~5/10로 안정적. 히트 시 영상당 12~61곡.
+  - **한국어 "드라이브 dj mix" 계열: 0/9 — 한국 DJ믹스는 설명란 트랙리스트 문화가 없음** → 한국어 세션 전용 쿼리는 만들지 않기로. 단 한국어 일반 무드 쿼리의 감성 플레이리스트 영상엔 2~3/10 존재(혼합검색으로 공짜 커버 가능).
+  - **파싱 성공률: 타임스탬프+구분자(-–—~|) 있으면 ~95%+** (22/22, 24/24, 61/63 등). "구분자 필수" 규칙이 **아티스트 없는 AI 양산 믹스(제목만 나열)를 자연 필터링**해줌 — 실패 케이스 대부분이 이 부류였고, 어차피 Spotify 매칭 불가한 곡들이라 오히려 이득.
+  - 예시영상(f7jZoHs3QfY)은 설명란·상위20댓글 모두 트랙리스트 없음. **댓글(commentThreads) 구제율 +2/10** — 수확 대비 복잡도·지연 커서 v1에선 제외(옵션으로 TODO 유지).
+- **결론: 조건부 GO** — ① 플레이리스트 검색(type=playlist)은 그대로 유지 ② 쿼리당 영상 검색 1회 추가(+100유닛): 영어="쿼리 + dj set"(수확 최고 경로), 한국어=무드 쿼리 그대로(감성 플리 영상 채굴) ③ 한국어 "dj mix" 세션 쿼리 제외 ④ 댓글 API 보류.
+- **⚠️ 혼합검색(type=playlist,video) 시도 → 폐기** #deprecated — 이유: 쿼터 동일해서 매력적이었으나 실측 결과 영상이 랭킹을 100% 독식, 플레이리스트가 0개 잡혀 기존 채굴이 죽음(272곡→68곡 회귀). 검색 1회 추가 방식으로 확정. **재시도 금지.**
+- **쿼터 계산**: 갱신당 현행 ~212유닛 → ~415유닛(일 10,000 한도에서 ~24회/일). 유저 2명 규모 문제없음, 확장 시 yt_pool 캐싱(기존 TODO)으로 해결.
+- **구현·배포 완료(2026-07-15)**: yt-search v14 (v13=혼합검색 버전은 회귀로 즉시 폐기). curl 검증 — 플레이리스트 수확 유지(272/218곡) + 세션 트랙 병합(예: Folamour DJ set 곡들, 8090 발라드 트랙리스트). 웹 변경 불필요(응답 형식 동일, cleanTitle+isGoodMatch가 그대로 흡수).
+- 참고: Supabase 무료티어 프로젝트가 1주 미사용으로 INACTIVE 됨(7/7→7/15) → restore로 복원(~1분). 장기 방치 시 재발 가능.
+- **주문 유의**: 트랙리스트가 "제목 — 아티스트" 역순인 경우 있음(한국 영상 다수). 웹의 cleanTitle+isGoodMatch(50% 토큰)가 순서 무관 검색이라 그대로 흡수됨 — 다운스트림 변경 불필요.
+
+## 태그 노이즈 정제 — 장르 사전 화이트리스트 (2026-07-15)
+- **방식 확정: 화이트리스트**(203개 정본 장르 + 36개 정규화 매핑). 블랙리스트(기존 isGenreLike)는 두더지잡기라 폐기 #decision — [[HANDOFF]] 방침대로.
+- 정규화 예: kpop→k-pop, hip hop→hip-hop, r&b→rnb, korean indie→k-indie, synth-pop→synthpop. 정규화 후 중복은 병합(genre_weights는 가중치 합산).
+- **enrich v14 배포**: lastfmTags가 canonGenre(정규화→사전검사) 통과분만 저장. 사전은 enrich 소스 안에 인라인(단일 소스). 항목 추가 시 enrich의 GENRES/GENRE_NORM 수정.
+- **기존 데이터 일괄 정제 완료**: track_facts.genres 316행 중 266행 정리, 태그 1261→766개(**39%가 노이즈였음** — korean·팬덤명·아티스트명·"my top songs" 등). 16행은 전량 노이즈라 NULL로 비움(backfill이 재시도). user_situation_prefs.genre_weights도 청소(조은비 1행: loud/groovy/british/melodic/moderate/my top songs 제거, 유효 10키 유지).
+- **검증**: ① 정제 후 distinct 태그 113종 전부 사전 내 ② backfill 30곡 filled=0은 정상(무명곡이라 Last.fm 태그 자체가 없음, 원본 확인) ③ 긍정 케이스 — Blinding Lights 강제 재수집 → [synthwave, synthpop, pop, electropop]만 저장(연도·잡태그 필터됨).
+- 관찰: "BIG Naughty (서동현)"처럼 아티스트명에 괄호 병기가 있으면 Last.fm 조회 실패 가능 — 필요해지면 괄호 제거 폴백 검토(기존 동작, 회귀 아님).
+
+## iOS 개발 시작 (2026-07-07, Phase 3 착수)
+- Xcode 26.6 설치 완료(iOS 26.5 플랫폼+시뮬레이터+Predictive Completion). xcode-select 전환 완료.
+- **Bundle ID 확정: `com.junkoh.DriveDJ`** (Organization Identifier=com.junkoh). TestFlight 첫 업로드 전까지 변경 가능, 이후 영구 — 사용자 인지함.
+- **✅ 프로젝트 생성·첫 실행 성공(2026-07-07 새벽)**: ~/Documents/Projects/DriveDJ. Xcode 26은 Interface/Language 선택 없음(SwiftUI+Swift 고정). Testing System=None, Storage=None, Team 미설정(시뮬레이터는 불필요). git author=junkoh74/jun.koh8874@gmail.com. iPhone 17 Pro 시뮬레이터에서 Hello world 확인.
+- 참고: 시뮬레이터 목록=가상기기(iPhone 17세대만). 실기기(iPhone 14 Pro)는 USB 연결+개발자모드+Xcode에 Apple ID 추가 시 목록에 뜸 — 다음 세션.
+- 이름 전략: DriveDJ=가제. 런칭 브랜드명은 Display Name(언제든 변경)+스토어명으로 처리, 프로젝트 재생성 불필요. Bundle ID만 TestFlight 첫 업로드 전 확정하면 됨.
+- 확정 UX: 온보딩=수동 기본(▶ 버튼→authorizeAndPlayURI→자동복귀), 설정 옵트인 시 자동. 로그는 유저에게 숨기고 중요 이벤트만 알림.
+
+## 운영 보안 (2026-07-07)
+- **2FA 완료**: Supabase(관리자 계정, MS Authenticator+iCloud백업), GitHub(junkoh74, 리커버리코드는 ~/Documents/Github Recovery Code — 레포 밖·700). 2FA는 계정 전체 적용(프로젝트별 아님). Google은 API키 발급 계정 기준.
+- **YouTube 키 로테이션**: rhrudwns88@gmail.com → jun.koh8874@gmail.com 계정으로 통일. YOUTUBE_API_KEY2로 사전 테스트(yt-key-test 임시함수) 후 YOUTUBE_API_KEY 교체, yt-search 검증 완료(133/181곡). 옛 키 폐기. 유저 영향 0(키는 서버에만).
+- 임시 진단 함수 존재: tg-test(텔레그램), yt-key-test(키 테스트) — 대시보드에서 삭제 가능, verify_jwt라 해롭진 않음.
+- **✅ CORS+rate limit 완료(2026-07-07)**: 4개 함수(yt-search/weather/enrich/log) CORS를 https://junkoh74.github.io 로 제한. rate_limits 테이블(키당 1행, 분창 덮어씀) + 한도: yt-search 4/min(IP)·weather 4/min(IP)·enrich 6/min(IP, backfill 1/min)·log 20/min(user_id 우선, 없으면 IP — CGNAT 대비). 입력 크기 캡(queries≤4, tracks≤60, serve ids≤60). 검증: CORS 헤더 확인 + 연타 5회째 429 ✓. 한도 근거=실사용의 2~3배(웹 자체 디바운스 45s/90s).
+- 남은 보안 TODO: Spotify 토큰 서버검증(친구 확대 전), iOS Keychain+App Attest(Phase3). iOS 전환 시 CORS 허용 오리진 재검토 필요(네이티브는 Origin 없음→CORS 미적용이라 무영향).
+
+## 날씨 정확도 & 국가별 소스 전략 (2026-07-06)
+- **실측 검증**: 서울 노원(실제 비 그침) — 기상청 "지금 비 안 옴"=정답, Open-Meteo "비 1.5mm"=오답. 5개 도시 비교(서울/도쿄/뉴욕/베를린/시드니): OM은 **"약한 비/방금 그친 비" 경계에서 '지금 비'로 과대 판정** 패턴(서울·도쿄), 명확한 날씨(베를린·뉴욕 비여부)는 정확. 시드니는 비교지표 결함(BOM rain_since_9am=누적)으로 판정 불가.
+- **결정**: 날씨는 국가 라우팅 구조 — **좌표의 국가**(유저 국적 아님, Nominatim country_code) 기준. KR=기상청(정식 data.go.kr API, 미착수—키 대기), 그 외=Open-Meteo 기본. 어댑터는 자동 추가 불가(수작업) → 소켓(라우팅)만 미리, 검증된 나라부터 꽂기. Spotify country=로케일용으로만.
+- 참고: 날씨누리 비공식 엔드포인트 `weather.go.kr/w/wnuri-fct2021/main/current-weather.do?lat=&lon=` (키 없이 실황, 스크래핑이라 불안정—정식은 data.go.kr). JMA 도쿄 실황: bosai/amedas point json. NWS/BrightSky/BOM도 무키 확인.
+- **새 국가 유저 텔레그램 알림 구축(검증완료)**: users.loc_country + countries_seen(kr 시드). 웹이 위치국가 변경 시 log{type:'user_location'} → 처음 보는 국가면 텔레그램 발송(TELEGRAM_BOT_TOKEN/CHAT_ID Secrets, 봇 @drive_dj_alert_bot). tg-test 진단함수 있음(임시). 웹 변경분은 로컬(다음 배포 포함).
+- **✅ 완료(2026-07-06)**: weather Edge Function v2 배포·검증 — POST {lat,lon,country} → country=kr+`KMA_WEATHER_KEY`(Secrets, 대문자 이름 확정)면 기상청(DFS 격자변환 + 초단기실황 PTY/T1H + 초단기예보 SKY), 실패/그외=OM 폴백(kma_error 표기). 반환 {key,temp,isDay,source}. 실측: 노원 source:kma ✓, 뉴욕 source:openmeteo ✓. 웹 fetchWeather도 함수 호출로 교체(WEATHER_LABELS 매핑, 로컬 미배포—다음 배포 v32 포함).
+- 한계 인지: 기상청 실황도 정시관측+40분발표라 최대 ~1h 시차 — 오락가락 비(장마)의 분단위 갭은 어떤 무료 API도 못 잡음. 무드 용도로는 허용.
 
 ## DB 추천 파운데이션 (2026-07-01)
 곡당 이벤트 행은 폭증 → **집계 테이블**로 저장(유저·상황 기준). 아래 테이블 + track_facts가 향후 "DB에서도 신규곡 추천" 알고리즘의 재료.

@@ -1,3 +1,10 @@
+---
+title: Drive DJ 사용 안내 (베타)
+date: 2026-07-01
+type: guide
+tags: [drive-dj]
+---
+
 # 🎵 Drive DJ — 사용 안내 (베타)
 
 지금 **상황에 맞는 새 노래**를 추천해서 Spotify로 틀어주는 앱이야.
