@@ -77,7 +77,7 @@ tags: [drive-dj]
 
 ## 5. 운영 규칙 (변하지 않는 것)
 - **배포는 "업데이트 해줘" 명령 시에만.** 버전=배포 횟수(작업량 무관, 1회 배포=+1). 현재 배포 **v31**, 로컬 미배포분 있음 → 다음 배포 **v32**
-- v32에 포함될 로컬 변경: 웹 fetchWeather→weather 함수 호출(WEATHER_LABELS 매핑), 위치국가 보고(reportLocCountry)
+- v32에 포함될 로컬 변경: 웹 fetchWeather→weather 함수 호출(WEATHER_LABELS 매핑), 위치국가 보고(reportLocCountry), **곡 선별 개편**(빈도 가중 샘플링+DJ세션 30% 슬롯+최종 정렬 빈도 보너스 — [[context-notes]] 2026-07-15)
 - 배포 시: index.html VERSION 올리고 CHANGELOG.md 기록 → commit/push → Pages 반영 확인(`?cb=N`)
 - 시크릿은 Supabase Secrets(실사용) + .env.local(참고, git제외·600). 절대 커밋 금지
 - 문서 체계: [[TODO]](할일) / [[CHANGELOG]](배포이력) / [[context-notes]](결정+이유) / [[GUIDE]](친구용 안내)
